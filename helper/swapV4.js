@@ -88,6 +88,9 @@ const { getClients, readPreflight, sendApprove } = require("../services/web3V4")
  * HELPER NỘI BỘ
  * ========================================================================== */
 
+/** Biên giá nhường cho lệnh limit: bán -0.1%, mua +0.1%. */
+const PRICE_SLIPPAGE = BigNumber(0.001);
+
 /**
  * Chống gửi trùng tx: cùng `swapId` gọi lại (server retry) thì trả kết quả cũ,
  * đang chạy thì chờ chính promise đó, KHÔNG gửi tx thứ hai.
@@ -146,10 +149,11 @@ const getCurrentTick = async ({ publicClient, pool }) => (await getSlot0({ publi
  * bán nhận về ít nhất `base * price`, mua trả nhiều nhất `amount`.
  */
 const buildAmounts = ({ isSell, amount, usdIn, usdOut, baseToken, quoteToken }) => {
-    const price = (isSell ? usdIn.dividedBy(usdOut) : usdOut.dividedBy(usdIn)).decimalPlaces(
-        PRICE_DECIMALS,
-        BigNumber.ROUND_DOWN
-    );
+    // Nhường 0.1% để lệnh limit dễ khớp: bán hạ giá 0.1%, mua nâng giá 0.1%.
+    const slippage = isSell ? BigNumber(1).minus(PRICE_SLIPPAGE) : BigNumber(1).plus(PRICE_SLIPPAGE);
+    const price = (isSell ? usdIn.dividedBy(usdOut) : usdOut.dividedBy(usdIn))
+        .times(slippage)
+        .decimalPlaces(PRICE_DECIMALS, BigNumber.ROUND_DOWN);
     if (price.lte(0)) throw new Error("[swapV4] giá limit làm tròn về 0, giá USD truyền vào quá lệch");
 
     let baseAmount;
