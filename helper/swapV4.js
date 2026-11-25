@@ -88,7 +88,7 @@ const { getClients, readPreflight, sendApprove } = require("../services/web3V4")
  * HELPER NỘI BỘ
  * ========================================================================== */
 
-/** Biên giá nhường cho lệnh limit: bán -0.1%, mua +0.1%. */
+/** Biên giá cộng thêm cho lệnh limit: bán +0.1%, mua -0.1%. */
 const PRICE_SLIPPAGE = BigNumber(0.001);
 
 /**
@@ -149,8 +149,8 @@ const getCurrentTick = async ({ publicClient, pool }) => (await getSlot0({ publi
  * bán nhận về ít nhất `base * price`, mua trả nhiều nhất `amount`.
  */
 const buildAmounts = ({ isSell, amount, usdIn, usdOut, baseToken, quoteToken }) => {
-    // Nhường 0.1% để lệnh limit dễ khớp: bán hạ giá 0.1%, mua nâng giá 0.1%.
-    const slippage = isSell ? BigNumber(1).minus(PRICE_SLIPPAGE) : BigNumber(1).plus(PRICE_SLIPPAGE);
+    // Cộng 0.1% biên lợi cho bot: bán nâng giá 0.1%, mua hạ giá 0.1%.
+    const slippage = isSell ? BigNumber(1).plus(PRICE_SLIPPAGE) : BigNumber(1).minus(PRICE_SLIPPAGE);
     const price = (isSell ? usdIn.dividedBy(usdOut) : usdOut.dividedBy(usdIn))
         .times(slippage)
         .decimalPlaces(PRICE_DECIMALS, BigNumber.ROUND_DOWN);
