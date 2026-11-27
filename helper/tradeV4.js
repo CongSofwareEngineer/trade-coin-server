@@ -647,37 +647,64 @@ const checkToSwap = async (item, itemPre, userConfig, state, swapCtx) => {
 // ================== Withdraw / Reset ==================
 
 /**
- * Swap toàn bộ số đang giữ về `userConfig.inputStart`.
+ * Chuẩn bị lệnh unwind: đưa toàn bộ số đang giữ về `userConfig.inputStart`.
  *
  * Đích đến là `inputStart` — đồng user NẠP lúc register, không phải
  * `state.outputSwap` (đồng bot tình cờ đang cầm sau lần swap cuối). Đây là lý
  * do `userConfig` phải lưu nguyên vẹn suốt vòng đời bot.
  *
- * Đang cầm sẵn đồng gốc → không swap, không mất phí.
+ * ⚠️ NOTE CHO TEAM SERVER — HÀM NÀY KHÔNG GỌI SWAP:
+ *   - Withdraw / Reset KHÔNG swap trực tiếp trong helper nữa. Server tự đặt
+ *     LIMIT-ORDER cho lệnh `inputSwap` → `outputSwap` (= `inputStart`) với số
+ *     lượng `state.amountInput` của config TRƯỚC khi gọi hàm.
+ *   - `amountSwap` và `txHash` trả về chỉ là GIÁ TRỊ TẠM (placeholder):
+ *       amountSwap = '0', txHash = '0x'
+ *     Server PHẢI cập nhật lại 2 field này (và các field suy ra từ nó, xem bên
+ *     dưới) sau khi limit-order khớp và transaction thành công onchain.
+ *   - Các field cũng đang mang giá trị tạm '0' vì phụ thuộc amountOut:
+ *       + WITHDRAW: `amountWithdraw`, `pnl` (= amountOut - amountStart),
+ *                   `config.state.amountInput`.
+ *       + RESET:    `config.userConfig.amountStart` của vòng mới,
+ *                   `config.state.amountInput`, `currentAmount`.
+ *   - Helper KHÔNG còn bỏ qua trường hợp đang cầm sẵn đồng gốc
+ *     (`inputSwap === outputSwap`): kết quả vẫn trả `isSwap: true`. Server tự
+ *     kiểm tra — nếu 2 đồng trùng nhau thì không đặt limit-order, lấy luôn
+ *     `amountInput` hiện tại làm amountOut.
+ *   - Logic swap trực tiếp cũ (callSwap) được giữ lại dạng comment để tham
+ *     khảo / bật lại nếu cần.
  */
 const unwindToInputStart = async (item, userConfig, state, swapCtx) => {
-    const holding = uppercase(state.outputSwap);
     const target = uppercase(userConfig.inputStart);
 
-    const tokenHolding = getTokenBySymbol(item.arrToken, holding);
-    const tokenTarget = getTokenBySymbol(item.arrToken, target);
+    // đồng đang nắm giữ → là `inputSwap` của lệnh limit-order server sẽ đặt
+    const holding = uppercase(state.outputSwap);
 
-    if (!tokenHolding) {
-        throw new Error(`[tradeV4] token đang nắm giữ "${holding}" không có trong arrToken`);
-    }
-    if (!tokenTarget) {
-        throw new Error(`[tradeV4] inputStart "${target}" không có trong arrToken`);
-    }
+    // ---- [TẠM TẮT] swap trực tiếp, thay bằng limit-order phía server ----
+    // const tokenHolding = getTokenBySymbol(item.arrToken, holding);
+    // const tokenTarget = getTokenBySymbol(item.arrToken, target);
+    //
+    // if (!tokenHolding) {
+    //     throw new Error(`[tradeV4] token đang nắm giữ "${holding}" không có trong arrToken`);
+    // }
+    // if (!tokenTarget) {
+    //     throw new Error(`[tradeV4] inputStart "${target}" không có trong arrToken`);
+    // }
+    //
+    // if (holding === target) {
+    //     return { amount: BigNumber(state.amountInput).toFixed(), swap: { ...NO_SWAP }, state };
+    // }
+    //
+    // const { amountOut, txHash } = await callSwap(swapCtx, {
+    //     tokenIn: tokenHolding,
+    //     tokenOut: tokenTarget,
+    //     amount: state.amountInput,
+    // });
+    // ---------------------------------------------------------------------
 
-    if (holding === target) {
-        return { amount: BigNumber(state.amountInput).toFixed(), swap: { ...NO_SWAP }, state };
-    }
-
-    const { amountOut, txHash } = await callSwap(swapCtx, {
-        tokenIn: tokenHolding,
-        tokenOut: tokenTarget,
-        amount: state.amountInput,
-    });
+    // PLACEHOLDER: server đặt limit-order rồi cập nhật lại 2 giá trị này
+    // (cùng các field phụ thuộc, xem docblock) khi transaction thành công.
+    const amountOut = '0'; // TODO(server): số thực nhận về từ limit-order
+    const txHash = '0x';   // TODO(server): hash của transaction limit-order
 
     state.amountInput = amountOut;
     state.outputSwap = target;
@@ -686,8 +713,8 @@ const unwindToInputStart = async (item, userConfig, state, swapCtx) => {
         amount: amountOut,
         swap: {
             isSwap: true,
-            inputSwap: holding,
-            outputSwap: target,
+            inputSwap: holding,  // server: tokenIn của limit-order
+            outputSwap: target,  // server: tokenOut của limit-order (= inputStart)
             amountSwap: amountOut,
             txHash,
         },
