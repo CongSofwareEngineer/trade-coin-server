@@ -1,8 +1,8 @@
 # Trade V4 — tài liệu logic và cách ghép vào server
 
-Tài liệu này mô tả thuật toán trading trong `helper/tradeV4.js`: nó nhận gì, trả gì, quyết định swap theo quy tắc nào, và server phải gọi nó theo trình tự nào.
+Tài liệu này mô tả thuật toán trading trong `helper/tradeV4.ts`: nó nhận gì, trả gì, quyết định swap theo quy tắc nào, và server phải gọi nó theo trình tự nào.
 
-Người đọc: team server ghép thuật toán vào project, và các AI agent (GPT, Claude, Gemini...) được giao đọc hoặc sửa code liên quan. Mọi công thức và ví dụ số ở đây khớp với code hiện tại; ví dụ ở mục 8 và dữ liệu mẫu ở mục 9 là kết quả chạy thật, lấy từ `helper/tradeV4_Data.js`.
+Người đọc: team server ghép thuật toán vào project, và các AI agent (GPT, Claude, Gemini...) được giao đọc hoặc sửa code liên quan. Mọi công thức và ví dụ số ở đây khớp với code hiện tại; ví dụ ở mục 8 và dữ liệu mẫu ở mục 9 là kết quả chạy thật, lấy từ `helper/tradeV4_Data.ts`.
 
 ## 1. Phạm vi
 
@@ -10,22 +10,22 @@ Người đọc: team server ghép thuật toán vào project, và các AI agent
 | --- | --- |
 | Tính chỉ số của từng token tại một mốc giá | Lấy giá token |
 | Quyết định có swap hay không, swap sang token nào | Theo dõi tx sau khi đã gửi, retry |
-| Gọi `swapV4.js` để GỬI tx swap | Ký tx, nối contract (nằm trong `swapV4.js`) |
+| Gọi `swapV4.ts` để GỬI tx swap | Ký tx, nối contract (nằm trong `swapV4.ts`) |
 | Tính `config` mới và `history` của mốc đó | Lưu DB, khoá bot, chuyển tiền về ví user |
 | Kiểm tra đầu vào, sai thì throw | |
 
 Thuật toán không biết thời gian. Mỗi lần gọi là một **mốc giá**; server quyết định bao lâu gọi một lần.
 
-**Swap chỉ GỬI tx, không chờ confirm.** `swapV4.js` tạo hash rồi trả về ngay — chờ tx lên chain thì rất lâu mà không cần thiết. Vì vậy mốc có swap mang `action = "SWAP_PENDING"`: chắc chắn đã gửi tx, chưa chắc đã swap xong. Theo dõi `txHash` để chốt trạng thái là việc của server.
+**Swap chỉ GỬI tx, không chờ confirm.** `swapV4.ts` tạo hash rồi trả về ngay — chờ tx lên chain thì rất lâu mà không cần thiết. Vì vậy mốc có swap mang `action = "SWAP_PENDING"`: chắc chắn đã gửi tx, chưa chắc đã swap xong. Theo dõi `txHash` để chốt trạng thái là việc của server.
 
 File liên quan:
 
 | File | Vai trò |
 | --- | --- |
-| `helper/tradeV4.js` | Toàn bộ thuật toán, chạy thật từng mốc giá. Chỉ phụ thuộc `bignumber.js` và `swapV4.js`. |
-| `helper/swapV4.js` | Hàm gửi tx swap. Chỗ duy nhất chạm contract. Hiện là stub, phải nối contract thật. |
-| `helper/tradeV4_Data.js` | Data mẫu + schema mẫu. Không có logic, chỉ để đọc và làm fixture test. |
-| `indexV4.ts` (project trade-coin-pro) | Bản backtest, chạy for() qua cả mảng lịch sử. `tradeV4.js` là port 1-1 của file này, giữ nguyên tên hàm để so sánh được từng dòng. |
+| `helper/tradeV4.ts` | Toàn bộ thuật toán, chạy thật từng mốc giá. Chỉ phụ thuộc `bignumber.js` và `swapV4.ts`. |
+| `helper/swapV4.ts` | Hàm gửi tx swap. Chỗ duy nhất chạm contract. Hiện là stub, phải nối contract thật. |
+| `helper/tradeV4_Data.ts` | Data mẫu + schema mẫu. Không có logic, chỉ để đọc và làm fixture test. |
+| `indexV4.ts` (project trade-coin-pro) | Bản backtest, chạy for() qua cả mảng lịch sử. `tradeV4.ts` là port 1-1 của file này, giữ nguyên tên hàm để so sánh được từng dòng. |
 
 ## 2. Thuật ngữ
 
@@ -56,10 +56,10 @@ Server dùng đúng bốn hàm. **Cả bốn đều trả về cùng một dạn
 const { history, config } = await runTradeV4({
   config: bot.config,   // khối config lấy từ DB
   arrToken,             // [{ symbol, address, price }]
-  idBot: bot._id,       // truyền nguyên xuống swapV4.js
-  chainId: "56",        // truyền nguyên xuống swapV4.js
+  idBot: bot._id,       // truyền nguyên xuống swapV4.ts
+  chainId: "56",        // truyền nguyên xuống swapV4.ts
   swapId,               // khoá chống gửi trùng tx
-  // swap: fn           // tuỳ chọn — mặc định là swapOnchainV4 của swapV4.js
+  // swap: fn           // tuỳ chọn — mặc định là swapOnchainV4 của swapV4.ts
 });
 ```
 
@@ -158,7 +158,7 @@ Server lưu nguyên khối này trong DB và truyền lại nguyên khối ở m
 | `action` | `"DEPOSIT"`, `"NOSWAP"`, `"SWAP_PENDING"`, `"WITHDRAW"` hoặc `"RESET"` (mục 4.5) |
 | `isSwap` | Mốc này có gửi tx swap hay không |
 | `inputSwap`, `outputSwap` | Symbol token swap từ / sang. `null` nếu không swap. |
-| `amountSwap` | Số token nhận về, lấy nguyên từ `swapV4.js`. `null` nếu không swap. |
+| `amountSwap` | Số token nhận về, lấy nguyên từ `swapV4.ts`. `null` nếu không swap. |
 | `txHash` | Hash của tx swap. `null` nếu không swap. |
 | `currentToken`, `currentAmount` | Token và số lượng đang giữ sau mốc này |
 | `arrToken[]` | Số liệu từng token (mục 4.4) |
@@ -203,12 +203,12 @@ Ví dụ BNB tại mốc 3 của mục 8 (BNB 643,5 → 640, có swap nên point
 
 `WITHDRAW` và `RESET` cũng là tx vừa gửi chưa confirm; chỉ `action` không mang chữ `_PENDING` vì bản thân hai lệnh đó là hành động một lần của user, không phải mốc giá định kỳ.
 
-### 4.6. Gọi sang `swapV4.js`
+### 4.6. Gọi sang `swapV4.ts`
 
 Thuật toán gọi đúng một hàm để swap:
 
 ```js
-// tradeV4.js gửi:
+// tradeV4.ts gửi:
 {
   idBot: "68f1c0a9e3b94a0012ab34cd",  // truyền nguyên từ tham số vào
   chainId: "56",
@@ -218,7 +218,7 @@ Thuật toán gọi đúng một hàm để swap:
   amount:   "1",           // toàn bộ số đang giữ, ĐƠN VỊ TOKEN (không phải wei)
 }
 
-// swapV4.js trả:
+// swapV4.ts trả:
 {
   txHash: "0x9f2c...",
   amount: "3.7425",        // số tokenOut nhận về
@@ -285,7 +285,7 @@ Diễn giải bằng lời: bot mua một token khi nó vừa rớt quá ngưỡ
 | --- | --- |
 | Qua tầng 1 | `outputSwapTemp = ứng viên` |
 | Qua tầng 2 (dù có swap hay không) | `ETHLastSwap[token so sánh] = perETH của token so sánh tại mốc này` |
-| Có swap | `outputSwap = ứng viên`, `amountInput = amount` do `swapV4.js` trả về. Point của ứng viên về 1000; token nào có point dưới 1000 cũng lên 1000. |
+| Có swap | `outputSwap = ứng viên`, `amountInput = amount` do `swapV4.ts` trả về. Point của ứng viên về 1000; token nào có point dưới 1000 cũng lên 1000. |
 | Cuối mỗi mốc | Xét dời mốc gốc (mục 6). `itemPre` = số liệu mốc này. |
 
 Hệ quả cần nhớ:
@@ -339,13 +339,13 @@ Register không swap. Nó khoá giá gốc (`price1Point`, `perETHOriginal`, `ET
 
 Đừng chạy hai mốc song song cho cùng một bot.
 
-Vì hàm chỉ gửi tx chứ không chờ confirm, `config` đã lưu số `amount` mà `swapV4.js` trả về. Nếu tx fail onchain về sau, thuật toán không biết: lúc đó số trong `config` lệch với số dư thật và server phải xử lý (xem 7.3).
+Vì hàm chỉ gửi tx chứ không chờ confirm, `config` đã lưu số `amount` mà `swapV4.ts` trả về. Nếu tx fail onchain về sau, thuật toán không biết: lúc đó số trong `config` lệch với số dư thật và server phải xử lý (xem 7.3).
 
 ### 7.3. Tx fail onchain sau khi đã lưu
 
 | Tình huống | Server làm |
 | --- | --- |
-| `swapV4.js` throw (chưa gửi được tx) | Không có gì để lưu. `config` trong DB chưa đổi. Mốc sau xét lại từ đầu. |
+| `swapV4.ts` throw (chưa gửi được tx) | Không có gì để lưu. `config` trong DB chưa đổi. Mốc sau xét lại từ đầu. |
 | Tx đã gửi, sau đó fail / revert | `config` đang ghi nhận token mới trong khi ví vẫn giữ token cũ. Phải quyết định: gửi lại tx theo đúng `history.inputSwap`/`outputSwap`/`amountSwap`, hoặc đưa bot về trạng thái cũ. Thuật toán không tự xử lý được việc này. |
 | Tx treo quá lâu | Giữ khoá bot, không chạy mốc mới cho tới khi rõ kết quả. |
 
@@ -363,7 +363,7 @@ Với lệnh rút, thuật toán chỉ lo phần swap. Chuyển tiền từ cont
 
 ## 8. Ví dụ số thật
 
-Bot 3 token, nạp 1 ETH, ngưỡng 0,3%. Giá USD từng mốc — đây đúng là bộ số trong `helper/tradeV4_Data.js`:
+Bot 3 token, nạp 1 ETH, ngưỡng 0,3%. Giá USD từng mốc — đây đúng là bộ số trong `helper/tradeV4_Data.ts`:
 
 | Mốc | ETH | BTC | BNB | Kết quả |
 | --- | --- | --- | --- | --- |
@@ -398,7 +398,7 @@ Mốc này tuy không swap nhưng cần thiết: nó đổi `outputSwapTemp` san
 - Tầng 4a: vốn quy ETH = 1 × 2400 / 2400 = 1 ≥ `ETHOriginalAmount` 1. Đạt.
 - Tầng 4b: 0,266666 ≥ `perETHOriginal.BNB` 0,26. Đạt.
 
-→ Gửi tx swap 1 ETH sang BNB. `swapV4.js` trả 3,7425 BNB (mô phỏng trừ 0,2% phí + slippage). `action = "SWAP_PENDING"`, point cả 3 token về 1000, `ETHLastSwap.BNB = 0,266666...`, `perETHOriginal.BNB` vẫn giữ mốc gốc 0,26.
+→ Gửi tx swap 1 ETH sang BNB. `swapV4.ts` trả 3,7425 BNB (mô phỏng trừ 0,2% phí + slippage). `action = "SWAP_PENDING"`, point cả 3 token về 1000, `ETHLastSwap.BNB = 0,266666...`, `perETHOriginal.BNB` vẫn giữ mốc gốc 0,26.
 
 Nếu số BNB ghi nhận sau mốc 3 thấp hơn thực tế (ví dụ đọc sai số nhận về), tầng 4a ở các mốc sau sẽ chặn sai.
 
@@ -409,7 +409,7 @@ Nếu số BNB ghi nhận sau mốc 3 thấp hơn thực tế (ví dụ đọc s
 
 ## 9. Mẫu schema database (tham khảo)
 
-Bản đầy đủ nằm trong `helper/tradeV4_Data.js` — file đó chứa cả schema mẫu và 20 khối data mẫu là output thật của từng hàm. Mục này là bản rút gọn.
+Type của mọi field nằm ở `types/trade.ts`; schema gợi ý (`SettingV4Document`, `HistoryV4Document`, mẫu mongoose, index, enum `HISTORY_ACTIONS` / `HISTORY_STATUSES`) nằm ở `types/database.ts`. 20 khối data mẫu (output thật của từng hàm, đã gắn type) nằm ở `helper/tradeV4_Data.ts`. Mục này là bản rút gọn.
 
 Mục này là **đề xuất để team server tham khảo**, không phải yêu cầu của thuật toán. Backend tự quyết tên collection, tên field phía server và index.
 
@@ -470,7 +470,7 @@ Giá trị `config` ngay sau register (bot 3 token, nạp 1 ETH):
 const HistoryV4Schema = new Schema({
   tradingSettingId: { type: ObjectId, index: true },
 
-  // nguyên văn history của tradeV4.js
+  // nguyên văn history của tradeV4.ts
   action:        { type: String },   // DEPOSIT | NOSWAP | SWAP_PENDING | WITHDRAW | RESET
   isSwap:        { type: Boolean },
   inputSwap:     { type: String },
@@ -552,11 +552,11 @@ Bản ghi RESET: `inputSwap` / `outputSwap` / `amountSwap` / `txHash` là lệnh
 
 ## 10. Test offline
 
-`tradeV4.js` nhận tham số `swap` để thay hàm swap thật bằng hàm giả, nên chạy được hoàn toàn offline, không gửi tx nào:
+`tradeV4.ts` nhận tham số `swap` để thay hàm swap thật bằng hàm giả, nên chạy được hoàn toàn offline, không gửi tx nào:
 
 ```js
-const d = require("./helper/tradeV4_Data.js");
-const { registerTradeV4, runTradeV4 } = require("./helper/tradeV4.js");
+const d = require("./helper/tradeV4_Data.ts");
+const { registerTradeV4, runTradeV4 } = require("./helper/tradeV4.ts");
 
 const reg = registerTradeV4({ config: d.CONFIG_REGISTER_INPUT, arrToken: d.ARR_TOKEN_REGISTER });
 // reg.history trùng d.HISTORY_DEPOSIT, reg.config trùng d.CONFIG_AFTER_REGISTER
@@ -570,21 +570,21 @@ const res = await runTradeV4({
 // res.history trùng d.HISTORY_SWAP_PENDING, res.config trùng d.CONFIG_AFTER_SWAP
 ```
 
-Mọi khối data trong `tradeV4_Data.js` là output thật của code, nên dùng làm expected value của test được ngay.
+Mọi khối data trong `tradeV4_Data.ts` là output thật của code, nên dùng làm expected value của test được ngay.
 
 ## 11. Số nhận về từ swap — con số quan trọng nhất
 
-`amount` mà `swapV4.js` trả về trở thành vốn của mọi mốc sau. Thuật toán không tự tính lại, không tự trừ phí hay trượt giá, và không kiểm được số này có thật hay không.
+`amount` mà `swapV4.ts` trả về trở thành vốn của mọi mốc sau. Thuật toán không tự tính lại, không tự trừ phí hay trượt giá, và không kiểm được số này có thật hay không.
 
-Yêu cầu với `swapV4.js`:
+Yêu cầu với `swapV4.ts`:
 
 - Trả số tokenOut **thực sự của lệnh swap**, đơn vị token, đã chia đúng `decimals` của `tokenOut`.
 - Cách lấy đề xuất: đọc từ kết quả gọi contract / event swap; nếu chưa có thì dùng số quote tại thời điểm gửi.
 - Gửi tx không thành công → **throw**, đừng trả số 0 hay số ước. Throw thì `config` trong DB không bị ghi sai.
 
-`tradeV4.js` chỉ chặn được giá trị không phải số dương. Sai decimals hoặc đọc nhầm token vẫn cho ra một số dương hợp lệ và sẽ không bị phát hiện.
+`tradeV4.ts` chỉ chặn được giá trị không phải số dương. Sai decimals hoặc đọc nhầm token vẫn cho ra một số dương hợp lệ và sẽ không bị phát hiện.
 
-**Trạng thái hiện tại:** `swapV4.js` là stub, trả `{ txHash: "0x", amount: "0" }`. Vì `amount = "0"` nên `tradeV4.js` sẽ throw `trả amount không hợp lệ: 0` ngay khi gặp mốc cần swap. Phải nối contract thật trước khi chạy production.
+**Trạng thái hiện tại:** `swapV4.ts` là stub, trả `{ txHash: "0x", amount: "0" }`. Vì `amount = "0"` nên `tradeV4.ts` sẽ throw `trả amount không hợp lệ: 0` ngay khi gặp mốc cần swap. Phải nối contract thật trước khi chạy production.
 
 ## 12. Quy tắc bắt buộc
 
@@ -605,7 +605,7 @@ KHÔNG ĐƯỢC:
 - Gọi `runTradeV4` khi bot còn tx swap chưa rõ kết quả.
 - Sửa field trong `config.state` / `config.itemPre`, hoặc lưu một phần `config`.
 - Lưu `config` khi hàm đã throw (lúc đó không có `config` mới).
-- Tự tính số nhận về theo giá thay cho số `swapV4.js` trả.
+- Tự tính số nhận về theo giá thay cho số `swapV4.ts` trả.
 - Thêm field vào `history` rồi coi đó là của thuật toán.
 - Đổi công thức, dấu so sánh (`>` và `≥`) hoặc thứ tự các tầng ở mục 5 khi không có yêu cầu từ team logic.
 
@@ -629,14 +629,14 @@ Mọi lỗi có tiền tố `[tradeV4]`. Khi throw, không có `config` mới; s
 | `itemPre.X thiếu <field> — mốc trước lưu không đủ` | DB lưu thiếu `price`, `perETH` hoặc `pointAfterCheck` của token X |
 | `state.price1Point thiếu X` | DB lưu thiếu `price1Point` của token X |
 | `token đang nắm giữ "X" không có trong arrToken` | Bỏ bớt token bot đang giữ |
-| `swap X->Y trả amount không hợp lệ` | `swapV4.js` trả `amount` không phải số dương |
+| `swap X->Y trả amount không hợp lệ` | `swapV4.ts` trả `amount` không phải số dương |
 | `thiếu idBot`, `thiếu chainId`, `swap phải là function` | Thiếu tham số của run / withdraw / reset |
 
 ## 14. Điểm chưa chốt
 
 Các điểm sau chưa có quyết định cuối và cần team logic cùng team server thống nhất:
 
-- **Nối contract trong `swapV4.js`.** Hiện là stub. Phải chốt cách lấy số tokenOut trả về (mục 11) và khi nào coi là gửi tx thất bại để throw.
+- **Nối contract trong `swapV4.ts`.** Hiện là stub. Phải chốt cách lấy số tokenOut trả về (mục 11) và khi nào coi là gửi tx thất bại để throw.
 - **Tx fail onchain sau khi đã lưu `config`.** Vì không chờ confirm, trường hợp này cần một luồng bù trừ ở phía server (mục 7.3).
 - **Chu kỳ gọi.** Cron cũ chạy mỗi bot một lần mỗi giờ. Tài liệu giả định giữ nguyên; ngưỡng biến động được so giữa hai mốc liền nhau nên đổi chu kỳ sẽ đổi hành vi.
 - **Bot đang chạy theo schema cũ.** Chưa có hàm chuyển state cũ sang `config` mới. Hiện tại bot phải register lại.

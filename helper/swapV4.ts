@@ -15,13 +15,14 @@
  *   - withdraw(params)  rút lệnh đã khớp về ví (UI = nút Withdraw / Cancel)
  *
  * Các phần khác đã tách ra:
- *   constant/token.js      USDC / stablecoin cố định theo chain
- *   constant/abis.js       ABI hook + StateView
- *   constant/swapV4.js     số, ngưỡng, hằng số tick math
- *   utils/tickMathV4.js    toán tick / sqrtPrice / liquidity, poolKey, poolId
- *   utils/quoteV4.js       sizeOrder + quoteLimitOrder
- *   services/poolV4.js     API /pool
- *   services/web3V4.js     ví ký, RPC, client viem, approve ERC20
+ *   constant/token.ts      USDC / stablecoin cố định theo chain
+ *   constant/abis.ts       ABI hook + StateView
+ *   constant/swapV4.ts     số, ngưỡng, hằng số tick math
+ *   utils/tickMathV4.ts    toán tick / sqrtPrice / liquidity, poolKey, poolId
+ *   utils/quoteV4.ts       sizeOrder + quoteLimitOrder
+ *   services/poolV4.ts     API /pool
+ *   services/web3V4.ts     ví ký, RPC, client viem, approve ERC20
+ *   types/swap.ts          type tham số / kết quả của 4 hàm
  *
  * ----------------------------------------------------------------------------
  * VÀO (giống hệt `swapOnchainV4` cũ):
@@ -36,7 +37,7 @@
  *
  * RA:
  *     { txHash, amount, ... }   `amount` = số tokenOut nhận được của lệnh,
- *                               đơn vị token (đúng field tradeV4.js đang đọc)
+ *                               đơn vị token (đúng field tradeV4.ts đang đọc)
  *
  * LỖI: không gửi được tx → THROW. Chỉ return khi tx đã được gửi lên mạng.
  *
@@ -67,22 +68,32 @@
  * ============================================================================
  */
 
-const BigNumber = require("bignumber.js");
-const { formatUnits, getAddress, isAddress, parseUnits } = require("viem");
-const { LIMIT_ORDER_HOOK_ABI, STATE_VIEW_ABI } = require("../constant/abis");
-const { MAX_UINT256, NATIVE_GAS_BUFFER, PRICE_DECIMALS, ZERO } = require("../constant/swapV4");
-const { isSameAddress } = require("../constant/token");
-const {
+import BigNumber from "bignumber.js";
+import { formatUnits, getAddress, isAddress, parseUnits, type Address, type Hex } from "viem";
+import { LIMIT_ORDER_HOOK_ABI, STATE_VIEW_ABI } from "../constant/abis";
+import { MAX_UINT256, NATIVE_GAS_BUFFER, PRICE_DECIMALS, ZERO } from "../constant/swapV4";
+import { isSameAddress } from "../constant/token";
+import {
     amount0ForLiquidity,
     amount1ForLiquidity,
     buildPoolKey,
     getAmountsForLiquidity,
     getPoolId,
     getSqrtRatioAtTick,
-} = require("../utils/tickMathV4");
-const { quoteLimitOrder } = require("../utils/quoteV4");
-const { findPool } = require("../services/poolV4");
-const { getClients, readPreflight, sendApprove } = require("../services/web3V4");
+} from "../utils/tickMathV4";
+import { quoteLimitOrder } from "../utils/quoteV4";
+import { findPool } from "../services/poolV4";
+import { getClients, readPreflight, sendApprove, type BotClients } from "../services/web3V4";
+import type { Pool, PoolToken } from "../types/pool";
+import type {
+    ApproveParams,
+    ApproveResult,
+    OrderFillStatus,
+    PlaceOrderResult,
+    SwapParams,
+    WithdrawParams,
+    WithdrawResult,
+} from "../types/swap";
 
 /* ============================================================================
  * HELPER NỘI BỘ
@@ -95,14 +106,14 @@ const PRICE_SLIPPAGE = BigNumber(0.001);
  * Chống gửi trùng tx: cùng `swapId` gọi lại (server retry) thì trả kết quả cũ,
  * đang chạy thì chờ chính promise đó, KHÔNG gửi tx thứ hai.
  */
-const inflight = new Map();
+const inflight = new Map<string, Promise<unknown>>();
 
-const withSwapId = (swapId, action, run) => {
+const withSwapId = <T>(swapId: string | undefined, action: string, run: () => Promise<T>): Promise<T> => {
     if (!swapId) return run();
 
     const key = `${action}:${swapId}`;
     const cached = inflight.get(key);
-    if (cached) return cached;
+    if (cached) return cached as Promise<T>;
 
     const promise = run().catch((error) => {
         // Gửi tx thất bại thì bỏ khoá để lần retry sau được gửi lại.
@@ -114,7 +125,7 @@ const withSwapId = (swapId, action, run) => {
     return promise;
 };
 
-const requireAddress = (value, label) => {
+const requireAddress = (value: string | null | undefined, label: string): Address => {
     console.log({ value, label });
 
     if (!value || !isAddress(value)) throw new Error(`[swapV4] ${label} không phải address: ${value}`);
@@ -122,7 +133,7 @@ const requireAddress = (value, label) => {
     return getAddress(value);
 };
 
-const requirePositive = (value, label) => {
+const requirePositive = (value: BigNumber.Value, label: string): BigNumber => {
     const number = BigNumber(value);
     if (!number.isFinite() || number.lte(0)) throw new Error(`[swapV4] ${label} phải là số > 0: ${value}`);
 
@@ -130,7 +141,13 @@ const requirePositive = (value, label) => {
 };
 
 /** Giá + tick hiện tại của pool, từ `StateView.getSlot0`. */
-const getSlot0 = async ({ publicClient, pool }) => {
+const getSlot0 = async ({
+    publicClient,
+    pool,
+}: {
+    publicClient: BotClients["publicClient"];
+    pool: Pool;
+}): Promise<{ sqrtPriceX96: bigint; tick: number }> => {
     const slot0 = await publicClient.readContract({
         abi: STATE_VIEW_ABI,
         address: pool.stateView,
@@ -142,7 +159,13 @@ const getSlot0 = async ({ publicClient, pool }) => {
 };
 
 /** Tick hiện tại của pool. */
-const getCurrentTick = async ({ publicClient, pool }) => (await getSlot0({ publicClient, pool })).tick;
+const getCurrentTick = async ({
+    publicClient,
+    pool,
+}: {
+    publicClient: BotClients["publicClient"];
+    pool: Pool;
+}): Promise<number> => (await getSlot0({ publicClient, pool })).tick;
 
 /**
  * Giá limit (quote per base) và hai số base / quote của lệnh.
@@ -150,7 +173,21 @@ const getCurrentTick = async ({ publicClient, pool }) => (await getSlot0({ publi
  * Làm tròn đúng như `PlaceOrderForm`: bên user nhập luôn được tôn trọng —
  * bán nhận về ít nhất `base * price`, mua trả nhiều nhất `amount`.
  */
-const buildAmounts = ({ isSell, amount, usdIn, usdOut, baseToken, quoteToken }) => {
+const buildAmounts = ({
+    isSell,
+    amount,
+    usdIn,
+    usdOut,
+    baseToken,
+    quoteToken,
+}: {
+    isSell: boolean;
+    amount: BigNumber.Value;
+    usdIn: BigNumber;
+    usdOut: BigNumber;
+    baseToken: PoolToken;
+    quoteToken: PoolToken;
+}): { price: BigNumber; baseAmount: BigNumber; quoteAmount: BigNumber } => {
     // Cộng 0.1% biên lợi cho bot: bán nâng giá 0.1%, mua hạ giá 0.1%.
     const slippage = isSell ? BigNumber(1).plus(PRICE_SLIPPAGE) : BigNumber(1).minus(PRICE_SLIPPAGE);
     const price = (isSell ? usdIn.dividedBy(usdOut) : usdOut.dividedBy(usdIn))
@@ -158,8 +195,8 @@ const buildAmounts = ({ isSell, amount, usdIn, usdOut, baseToken, quoteToken }) 
         .decimalPlaces(PRICE_DECIMALS, BigNumber.ROUND_DOWN);
     if (price.lte(0)) throw new Error("[swapV4] giá limit làm tròn về 0, giá USD truyền vào quá lệch");
 
-    let baseAmount;
-    let quoteAmount;
+    let baseAmount: BigNumber;
+    let quoteAmount: BigNumber;
     if (isSell) {
         baseAmount = BigNumber(amount).decimalPlaces(baseToken.decimals, BigNumber.ROUND_DOWN);
         quoteAmount = baseAmount.times(price).decimalPlaces(quoteToken.decimals, BigNumber.ROUND_DOWN);
@@ -176,10 +213,7 @@ const buildAmounts = ({ isSell, amount, usdIn, usdOut, baseToken, quoteToken }) 
  * LÕI: đặt lệnh limit (dùng chung cho swapBuy / swapSell)
  * ========================================================================== */
 
-/**
- * @param {Object} params
- * @param {boolean} params.isSell  true = bán base lấy quote (Sell), false = mua base bằng quote (Buy)
- */
+/** `isSell`: true = bán base lấy quote (Sell), false = mua base bằng quote (Buy). */
 const placeLimitOrder = async ({
     isSell,
     idBot,
@@ -190,7 +224,7 @@ const placeLimitOrder = async ({
     priceTokenOut,
     amount,
     privateKey,
-}) => {
+}: SwapParams & { isSell: boolean }): Promise<PlaceOrderResult> => {
     const addressIn = requireAddress(tokenIn, "tokenIn");
     const addressOut = requireAddress(tokenOut, "tokenOut");
     if (isSameAddress(addressIn, addressOut)) throw new Error("[swapV4] tokenIn và tokenOut giống nhau");
@@ -271,7 +305,7 @@ const placeLimitOrder = async ({
         );
     }
 
-    let approveTxHash = null;
+    let approveTxHash: Hex | null = null;
     if (allowance < settleIn) {
         approveTxHash = await sendApprove({
             publicClient,
@@ -321,20 +355,9 @@ const placeLimitOrder = async ({
  *
  * `tokenIn` phải là USDC của chain, `tokenOut` là đồng muốn mua.
  * `amount` là số USDC đem đi mua (trả NHIỀU NHẤT số này).
- *
- * @param {Object} params
- * @param {string|number} params.idBot
- * @param {string|number} params.chainId
- * @param {string} [params.swapId]             khoá chống gửi trùng tx
- * @param {string} params.tokenIn              address USDC
- * @param {string|number} params.priceTokenIn  giá USD của USDC tại mốc swap
- * @param {string} params.tokenOut             address token muốn mua
- * @param {string|number} params.priceTokenOut giá USD của tokenOut tại mốc swap
- * @param {string} params.amount               số USDC đem mua, đơn vị token
- * @param {string} [params.privateKey]         ví ký, mặc định lấy từ env theo idBot
- * @returns {Promise<{ txHash: string, amount: string }>}
+ * Tham số: xem `SwapParams` (types/swap.ts).
  */
-const swapBuy = async (params) =>
+export const swapBuy = async (params: SwapParams): Promise<PlaceOrderResult> =>
     withSwapId(params && params.swapId, "buy", () => placeLimitOrder({ ...params, isSell: false }));
 
 /**
@@ -342,11 +365,9 @@ const swapBuy = async (params) =>
  *
  * `tokenIn` là đồng đang giữ, `tokenOut` phải là USDC của chain.
  * `amount` là số token đem bán (nhận về ÍT NHẤT `amount * price`).
- *
- * @param {Object} params  giống `swapBuy`, đổi chiều token
- * @returns {Promise<{ txHash: string, amount: string }>}
+ * Tham số giống `swapBuy`, đổi chiều token.
  */
-const swapSell = async (params) =>
+export const swapSell = async (params: SwapParams): Promise<PlaceOrderResult> =>
     withSwapId(params && params.swapId, "sell", () => placeLimitOrder({ ...params, isSell: true }));
 
 /**
@@ -354,21 +375,10 @@ const swapSell = async (params) =>
  *
  * `swapBuy` / `swapSell` tự approve đúng số cần khi allowance thiếu, nên hàm
  * này chỉ dùng khi muốn approve trước một lần cho nhiều mốc (amount rỗng =
- * approve max uint256).
- *
- * @param {Object} params
- * @param {string|number} params.idBot
- * @param {string|number} params.chainId
- * @param {string} [params.swapId]
- * @param {string} params.tokenIn    address token cần approve
- * @param {string} params.tokenOut   address token còn lại của pool (để tìm hook)
- * @param {string} [params.amount]   số token approve, rỗng = max
- * @param {string} [params.spender]  ghi đè spender, mặc định là hook của pool
- * @param {string} [params.privateKey]
- * @returns {Promise<{ txHash: string, amount: string, spender: string }>}
+ * approve max uint256). Tham số: xem `ApproveParams`.
  */
-const approve = async (params = {}) =>
-    withSwapId(params.swapId, "approve", async () => {
+export const approve = async (params: ApproveParams): Promise<ApproveResult> =>
+    withSwapId(params.swapId, "approve", async (): Promise<ApproveResult> => {
         const { idBot, chainId, tokenIn, tokenOut, amount, spender, privateKey } = params;
 
         const addressIn = requireAddress(tokenIn, "tokenIn");
@@ -429,27 +439,11 @@ const approve = async (params = {}) =>
  * đúng; với `mode = "CANCEL"` nó theo giá lúc đọc, giá nhảy trước khi tx lên
  * chain thì số thực nhận lệch.
  *
- * @param {Object} params
- * @param {string|number} params.idBot
- * @param {string|number} params.chainId
- * @param {string} [params.swapId]            khoá chống gửi trùng tx
- * @param {string} params.tokenIn             address token ĐÃ BÁN của lệnh (lúc place)
- * @param {string} params.tokenOut            address token MUA của lệnh (lúc place)
- * @param {string|number} [params.orderId]    orderId đã lưu lúc place; không có thì đọc
- *                                            `getOrderId(poolKey, tickLower, zeroForOne)`
- * @param {number} [params.tickLower]         tick dưới của lệnh (`placeOrder` trả về).
- *                                            BẮT BUỘC khi không có `orderId`, và khi
- *                                            phải đi đường `cancelOrder`
- * @param {boolean} [params.zeroForOne]       chiều lệnh; mặc định suy từ tokenIn/tokenOut
- * @param {string} [params.to]                ví nhận token, mặc định là ví của bot
- * @param {boolean} [params.allowCancel=true] lệnh chưa khớp hết thì cho phép `cancelOrder`
- * @param {string} [params.privateKey]
- * @returns {Promise<{ txHash: string, amount: string, mode: "WITHDRAW"|"CANCEL" }>}
- *          `amount` = số ĐỒNG MUA về ví. Lệnh chưa đổi được gì mà bị cancel thì
- *          `amount = "0"`, số gốc về ở `amountSellBack`.
+ * Tham số: xem `WithdrawParams`. `amount` trả về = số ĐỒNG MUA về ví. Lệnh chưa
+ * đổi được gì mà bị cancel thì `amount = "0"`, số gốc về ở `amountSellBack`.
  */
-const withdraw = async (params = {}) =>
-    withSwapId(params.swapId, "withdraw", async () => {
+export const withdraw = async (params: WithdrawParams): Promise<WithdrawResult> =>
+    withSwapId(params.swapId, "withdraw", async (): Promise<WithdrawResult> => {
         const {
             idBot,
             chainId,
@@ -514,13 +508,13 @@ const withdraw = async (params = {}) =>
         // Không có orderId thì đọc orderId ĐANG hoạt động của (tick, chiều) đó.
         // Lưu ý: lệnh cũ đã khớp xong mà slot này có lệnh mới thì id ở đây là id
         // MỚI — nên lưu orderId lúc place là chắc nhất.
-        const id = hasOrderId
-            ? BigInt(orderId)
+        const id: bigint = hasOrderId
+            ? BigInt(orderId as string | number | bigint)
             : await publicClient.readContract({
                 abi: LIMIT_ORDER_HOOK_ABI,
                 address: pool.hook,
                 functionName: "getOrderId",
-                args: [poolKey, tick, side],
+                args: [poolKey, tick as number, side],
             });
         if (id <= ZERO) throw new Error(`[swapV4] không tìm thấy orderId của tick ${tick} (pool ${pool.id})`);
 
@@ -552,7 +546,7 @@ const withdraw = async (params = {}) =>
         let amountOut = ZERO;
         let amountSellBack = ZERO;
         let filledPercent = 100;
-        let status = "FILLED";
+        let status: OrderFillStatus = "FILLED";
 
         if (filled) {
             // Đã khớp hết: chia tổng tiền đã đổi của orderId theo phần liquidity của ví.
@@ -608,7 +602,7 @@ const withdraw = async (params = {}) =>
                     abi: LIMIT_ORDER_HOOK_ABI,
                     address: pool.hook,
                     functionName: "cancelOrder",
-                    args: [poolKey, tick, side, receiver],
+                    args: [poolKey, tick as number, side, receiver],
                 }
         );
 
@@ -637,5 +631,3 @@ const withdraw = async (params = {}) =>
             zeroForOne: side,
         };
     });
-
-module.exports = { swapBuy, swapSell, approve, withdraw };

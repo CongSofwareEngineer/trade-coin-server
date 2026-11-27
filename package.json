@@ -1,0 +1,22 @@
+{
+  "name": "algorithmic-trading-onchain-v4",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Trade V4 — thuật toán trading + đặt lệnh limit order Uniswap v4 hook",
+  "main": "dist/index.js",
+  "scripts": {
+    "start": "tsx index.ts",
+    "backtest": "tsx index_backtest.ts",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc"
+  },
+  "dependencies": {
+    "bignumber.js": "^11.1.5",
+    "viem": "^2.58.8"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.11",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}

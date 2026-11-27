@@ -12,9 +12,9 @@
  * ============================================================================
  */
 
-const { formatUnits, parseUnits } = require("viem");
-const { MIN_TICK, MAX_TICK, ZERO, ONE } = require("../constant/swapV4");
-const {
+import { formatUnits, parseUnits } from "viem";
+import { MIN_TICK, MAX_TICK, ZERO, ONE } from "../constant/swapV4";
+import {
     amount0ForLiquidity,
     amount1ForLiquidity,
     encodeSqrtRatioX96,
@@ -25,7 +25,57 @@ const {
     getTickAtSqrtRatio,
     roundTickDown,
     roundTickUp,
-} = require("./tickMathV4");
+} from "./tickMathV4";
+
+/** Token tối thiểu quote cần: decimals để đổi đơn vị. */
+export interface QuoteToken {
+    address: string;
+    symbol: string;
+    decimals: number;
+}
+
+export interface SizedOrder {
+    liquidity: bigint;
+    settleIn: bigint;
+    actualIn: bigint;
+    actualOut: bigint;
+}
+
+export interface QuoteLimitOrderParams<T extends QuoteToken = QuoteToken> {
+    /** số token đem đặt, đơn vị token */
+    amountIn: string;
+    /** số token muốn nhận, đơn vị token */
+    amountOut: string;
+    /** true = bán token0 của pool */
+    zeroForOne: boolean;
+    /** tick hiện tại (getSlot0) */
+    currentTick?: number | null;
+    tickSpacing: number;
+    sellToken: T;
+    buyToken: T;
+}
+
+export interface QuoteLimitOrderResult<T extends QuoteToken = QuoteToken> {
+    zeroForOne: boolean;
+    sellToken: T;
+    buyToken: T;
+    rawTick: number;
+    tickLower: number;
+    tickUpper: number;
+    liquidity: bigint;
+    raw: {
+        liquidity: bigint;
+        requestedIn: bigint;
+        requestedOut: bigint;
+        actualIn: bigint;
+        settleIn: bigint;
+        actualOut: bigint;
+    };
+    amountIn: string;
+    amountOut: string;
+    executionPrice: number | null;
+    meetsRequestedOut: boolean;
+}
 
 /**
  * Liquidity lớn nhất trong `[tickLower, tickLower + tickSpacing]` mà `amountIn`
@@ -35,7 +85,17 @@ const {
  * thể đắt hơn amountIn 1 wei → phải co liquidity lại tới khi giá mint vừa với
  * amountIn, không thì approve / balance thiếu 1 wei và tx revert.
  */
-const sizeOrder = ({ tickLower, tickSpacing, zeroForOne, amountInUnits }) => {
+export const sizeOrder = ({
+    tickLower,
+    tickSpacing,
+    zeroForOne,
+    amountInUnits,
+}: {
+    tickLower: number;
+    tickSpacing: number;
+    zeroForOne: boolean;
+    amountInUnits: bigint;
+}): SizedOrder => {
     if (tickLower < MIN_TICK || tickLower + tickSpacing > MAX_TICK) {
         throw new Error(`[quoteV4] tick ${tickLower} ngoài khoảng: giá limit không đặt được`);
     }
@@ -51,7 +111,7 @@ const sizeOrder = ({ tickLower, tickSpacing, zeroForOne, amountInUnits }) => {
         zeroForOne ? ZERO : amountInUnits
     );
 
-    const costOf = (l) =>
+    const costOf = (l: bigint): bigint =>
         zeroForOne ? getAmount0Delta(sqrtLower, sqrtUpper, l, true) : getAmount1Delta(sqrtLower, sqrtUpper, l, true);
 
     let settleIn = liquidity > ZERO ? costOf(liquidity) : ZERO;
@@ -74,19 +134,16 @@ const sizeOrder = ({ tickLower, tickSpacing, zeroForOne, amountInUnits }) => {
     return { liquidity, settleIn, actualIn, actualOut };
 };
 
-/**
- * Quote một lệnh limit.
- *
- * @param {Object} params
- * @param {string} params.amountIn      số token đem đặt, đơn vị token
- * @param {string} params.amountOut     số token muốn nhận, đơn vị token
- * @param {boolean} params.zeroForOne   true = bán token0 của pool
- * @param {number} [params.currentTick] tick hiện tại (getSlot0) — xem ghi chú dưới
- * @param {number} params.tickSpacing
- * @param {{address: string, symbol: string, decimals: number}} params.sellToken
- * @param {{address: string, symbol: string, decimals: number}} params.buyToken
- */
-const quoteLimitOrder = ({ amountIn, amountOut, zeroForOne, currentTick, tickSpacing, sellToken, buyToken }) => {
+/** Quote một lệnh limit — xem `QuoteLimitOrderParams`, ghi chú `currentTick` ở dưới. */
+export const quoteLimitOrder = <T extends QuoteToken>({
+    amountIn,
+    amountOut,
+    zeroForOne,
+    currentTick,
+    tickSpacing,
+    sellToken,
+    buyToken,
+}: QuoteLimitOrderParams<T>): QuoteLimitOrderResult<T> => {
     const amountInUnits = parseUnits(String(amountIn), sellToken.decimals);
     const amountOutUnits = parseUnits(String(amountOut), buyToken.decimals);
     if (amountInUnits <= ZERO || amountOutUnits <= ZERO) throw new Error("[quoteV4] amountIn / amountOut phải > 0");
@@ -135,5 +192,3 @@ const quoteLimitOrder = ({ amountIn, amountOut, zeroForOne, currentTick, tickSpa
         meetsRequestedOut: actualOut >= amountOutUnits,
     };
 };
-
-module.exports = { sizeOrder, quoteLimitOrder };

@@ -15,10 +15,10 @@
  * ============================================================================
  */
 
-/** @typedef {{ address: string, symbol: string, decimals: number, chainId: number }} StableToken */
+import type { StableToken } from "../types/pool";
 
 /** USDC (hoặc stablecoin tương đương) theo chainId. Address luôn so sánh lowercase. */
-const STABLE_COIN_BY_CHAIN = {
+export const STABLE_COIN_BY_CHAIN: Record<number, StableToken> = {
     1: { address: "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", symbol: "USDC", decimals: 6, chainId: 1 },
     10: { address: "0x0b2c639c533813f4aa9d7837caf62653d097ff85", symbol: "USDC", decimals: 6, chainId: 10 },
     56: { address: "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d", symbol: "USDC", decimals: 18, chainId: 56 },
@@ -30,42 +30,23 @@ const STABLE_COIN_BY_CHAIN = {
 };
 
 /** Chain bot đang chạy mặc định (Base). */
-const DEFAULT_CHAIN_ID = 8453;
+export const DEFAULT_CHAIN_ID = 8453;
 
 /** USDC trên Base — đồng quote bot dùng cho mọi lệnh buy/sell. */
-const USDC = STABLE_COIN_BY_CHAIN[DEFAULT_CHAIN_ID];
+export const USDC: StableToken = STABLE_COIN_BY_CHAIN[DEFAULT_CHAIN_ID];
 
-const lower = (value) => String(value || "").trim().toLowerCase();
+const lower = (value: unknown): string => String(value || "").trim().toLowerCase();
 
-const isSameAddress = (a, b) => !!a && !!b && lower(a) === lower(b);
+export const isSameAddress = (a: string | null | undefined, b: string | null | undefined): boolean =>
+    !!a && !!b && lower(a) === lower(b);
 
-/**
- * Stablecoin (đồng quote) của một chain.
- *
- * @param {string|number} chainId
- * @returns {StableToken|null}
- */
-const getStableCoin = (chainId) => STABLE_COIN_BY_CHAIN[Number(chainId)] || null;
+/** Stablecoin (đồng quote) của một chain. */
+export const getStableCoin = (chainId: string | number): StableToken | null => STABLE_COIN_BY_CHAIN[Number(chainId)] || null;
 
-/**
- * Token này có phải đồng quote (USDC/USDG) của chain đó không.
- *
- * @param {string|number} chainId
- * @param {string} address
- * @returns {boolean}
- */
-const isStableCoin = (chainId, address) => {
+/** Token này có phải đồng quote (USDC/USDG) của chain đó không. */
+export const isStableCoin = (chainId: string | number, address: string): boolean => {
     const stable = getStableCoin(chainId);
     if (!stable) return false;
 
     return isSameAddress(stable.address, address);
-};
-
-module.exports = {
-    STABLE_COIN_BY_CHAIN,
-    DEFAULT_CHAIN_ID,
-    USDC,
-    getStableCoin,
-    isStableCoin,
-    isSameAddress,
 };

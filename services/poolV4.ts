@@ -14,14 +14,15 @@
  * ============================================================================
  */
 
-const { getAddress, isAddress } = require("viem");
-const { POOL_API_URL, POOL_CACHE_TTL_MS } = require("../constant/swapV4");
-const { getStableCoin, isSameAddress } = require("../constant/token");
+import { getAddress, isAddress } from "viem";
+import { POOL_API_URL, POOL_CACHE_TTL_MS } from "../constant/swapV4";
+import { getStableCoin, isSameAddress } from "../constant/token";
+import type { Pool, PoolApiItem, PoolApiResponse, PoolToken } from "../types/pool";
 
-let poolCache = { at: 0, items: [] };
+let poolCache: { at: number; items: PoolApiItem[] } = { at: 0, items: [] };
 
 /** Gọi API /pool, cache theo `POOL_CACHE_TTL_MS`. */
-const fetchPools = async () => {
+export const fetchPools = async (): Promise<PoolApiItem[]> => {
     const now = Date.now();
     if (poolCache.items.length && now - poolCache.at < POOL_CACHE_TTL_MS) return poolCache.items;
 
@@ -29,9 +30,9 @@ const fetchPools = async () => {
     const res = await fetch(url);
     if (!res.ok) throw new Error(`[poolV4] GET /pool lỗi ${res.status}`);
 
-    const body = await res.json();
+    const body = (await res.json()) as Partial<PoolApiResponse> | null;
     const items = ((body && body.data && body.data.items) || []).filter(
-        (item) => item && item.version === "v4" && !item.isDev
+        (item: PoolApiItem) => item && item.version === "v4" && !item.isDev
     );
 
     if (!items.length) throw new Error("[poolV4] API /pool không trả về pool v4 nào");
@@ -42,7 +43,7 @@ const fetchPools = async () => {
 };
 
 /** Xoá cache (test hoặc khi backend vừa thêm pool mới). */
-const clearPoolCache = () => {
+export const clearPoolCache = (): void => {
     poolCache = { at: 0, items: [] };
 };
 
@@ -52,13 +53,13 @@ const clearPoolCache = () => {
  * Trả `null` cho pool bot không trade được (chain chưa khai stablecoin trong
  * constant/token.js, thiếu address, hoặc pool không có chân stablecoin).
  */
-const toPool = (item) => {
+export const toPool = (item: PoolApiItem): Pool | null => {
     const chainId = Number(item.chainId);
     if (!isAddress(item.hookAddress) || !isAddress(item.poolAddress)) return null;
     if (!isAddress(item.token0 && item.token0.address) || !isAddress(item.token1 && item.token1.address)) return null;
 
-    const token0 = { address: getAddress(item.token0.address), symbol: item.token0.symbol, decimals: item.token0.decimals };
-    const token1 = { address: getAddress(item.token1.address), symbol: item.token1.symbol, decimals: item.token1.decimals };
+    const token0: PoolToken = { address: getAddress(item.token0.address), symbol: item.token0.symbol, decimals: item.token0.decimals };
+    const token1: PoolToken = { address: getAddress(item.token1.address), symbol: item.token1.symbol, decimals: item.token1.decimals };
 
     const stable = getStableCoin(chainId);
     if (!stable) return null;
@@ -88,19 +89,21 @@ const toPool = (item) => {
  *
  * Base đang có 2 hook cho WETH/USDC (hook cũ `0xbbEC…9040` backend chưa xoá)
  * → lấy pool mới nhất theo `createdAt`.
- *
- * @param {Object} params
- * @param {string|number} params.chainId
- * @param {string} params.tokenA
- * @param {string} params.tokenB
- * @returns {Promise<Object>} pool đã chuẩn hoá
  */
-const findPool = async ({ chainId, tokenA, tokenB }) => {
+export const findPool = async ({
+    chainId,
+    tokenA,
+    tokenB,
+}: {
+    chainId: string | number;
+    tokenA: string;
+    tokenB: string;
+}): Promise<Pool> => {
     const items = await fetchPools();
 
     const matched = items
         .map(toPool)
-        .filter(Boolean)
+        .filter((pool): pool is Pool => Boolean(pool))
         .filter((pool) => {
             if (pool.chainId !== Number(chainId)) return false;
             const pair = [pool.token0.address, pool.token1.address];
@@ -110,7 +113,7 @@ const findPool = async ({ chainId, tokenA, tokenB }) => {
                 pair.some((address) => isSameAddress(address, tokenB))
             );
         })
-        .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+        .sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
 
     if (!matched.length) {
         throw new Error(`[poolV4] chain ${chainId} không có pool limit order cho cặp ${tokenA} / ${tokenB}`);
@@ -118,5 +121,3 @@ const findPool = async ({ chainId, tokenA, tokenB }) => {
 
     return matched[0];
 };
-
-module.exports = { fetchPools, clearPoolCache, toPool, findPool };

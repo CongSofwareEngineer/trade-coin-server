@@ -1,21 +1,21 @@
 /**
  * ============================================================================
- * SWAP V4 BACKTEST — bản GIẢ LẬP của helper/swapV4.js
+ * SWAP V4 BACKTEST — bản GIẢ LẬP của helper/swapV4.ts
  * ============================================================================
  *
- * Cùng 4 hàm export, cùng tham số vào / field ra như swapV4.js:
+ * Cùng 4 hàm export, cùng tham số vào / field ra như swapV4.ts:
  *   - swapBuy(params)   mua tokenOut bằng tokenIn
  *   - swapSell(params)  bán tokenIn lấy tokenOut
  *   - approve(params)   không làm gì, trả hash giả
  *   - withdraw(params)  không làm gì, coi như lệnh đã khớp hết
  *
- * KHÁC swapV4.js:
+ * KHÁC swapV4.ts:
  *   - KHÔNG dùng viem, KHÔNG gọi API pool, KHÔNG đọc/ghi contract nào
  *   - không cần address thật, không cần private key, không check số dư / gas
  *   - lệnh limit coi như KHỚP NGAY tại giá limit (giá USD truyền vào +- biên)
  *   - `txHash` là chuỗi giả `0xbacktest...` tăng dần
  *
- * Số nhận về tính giống `buildAmounts` của swapV4.js:
+ * Số nhận về tính giống `buildAmounts` của swapV4.ts:
  *     swapSell → price = priceTokenIn  / priceTokenOut * (1 + PRICE_SLIPPAGE)
  *                amountOut = amount * price
  *     swapBuy  → price = priceTokenOut / priceTokenIn  * (1 - PRICE_SLIPPAGE)
@@ -23,7 +23,7 @@
  * price làm tròn xuống PRICE_DECIMALS chữ số như bản thật.
  *
  * Có thể chỉnh giả định qua `setBacktestOptions({ ... })`:
- *   priceSlippage   biên giá limit (mặc định 0.001 = 0.1%, giống swapV4.js)
+ *   priceSlippage   biên giá limit (mặc định 0.001 = 0.1%, giống swapV4.ts)
  *   feeRate         phí trừ trên số nhận về (mặc định 0 — hook limit order không thu phí swap)
  *   priceDecimals   số chữ số làm tròn giá limit (mặc định 4, giống PRICE_DECIMALS)
  *   amountDecimals  số chữ số làm tròn amount (mặc định 18)
@@ -31,9 +31,18 @@
  * ============================================================================
  */
 
-const BigNumber = require("bignumber.js");
+import BigNumber from "bignumber.js";
+import type {
+    ApproveParams,
+    ApproveResult,
+    BacktestOptions,
+    BacktestOrder,
+    SwapParams,
+    WithdrawParams,
+    WithdrawResult,
+} from "../types/swap";
 
-const DEFAULT_OPTIONS = Object.freeze({
+const DEFAULT_OPTIONS: Readonly<BacktestOptions> = Object.freeze({
     priceSlippage: "0.001",
     feeRate: "0",
     priceDecimals: 4,
@@ -41,10 +50,10 @@ const DEFAULT_OPTIONS = Object.freeze({
     log: false,
 });
 
-let options = { ...DEFAULT_OPTIONS };
+let options: BacktestOptions = { ...DEFAULT_OPTIONS };
 
 /** Đổi giả định backtest. Truyền object rỗng / gọi resetBacktest() để về mặc định. */
-const setBacktestOptions = (next = {}) => {
+export const setBacktestOptions = (next: Partial<BacktestOptions> = {}): BacktestOptions => {
     options = { ...options, ...next };
 
     return { ...options };
@@ -57,23 +66,23 @@ const setBacktestOptions = (next = {}) => {
 let txCounter = 0;
 
 /** Hash giả 32 byte, tăng dần để dễ dò trong history. */
-const fakeTxHash = () => {
+const fakeTxHash = (): string => {
     txCounter += 1;
 
     return `0xbacktest${txCounter.toString(16).padStart(56, "0")}`;
 };
 
 /** Toàn bộ lệnh đã "gửi" trong lần chạy backtest, để in báo cáo. */
-const orders = [];
+const orders: BacktestOrder[] = [];
 
 /** Chống gửi trùng như bản thật: cùng `swapId` gọi lại → trả kết quả cũ. */
-const inflight = new Map();
+const inflight = new Map<string, Promise<unknown>>();
 
-const withSwapId = (swapId, action, run) => {
+const withSwapId = <T>(swapId: string | undefined, action: string, run: () => Promise<T>): Promise<T> => {
     if (!swapId) return run();
 
     const key = `${action}:${swapId}`;
-    if (inflight.has(key)) return inflight.get(key);
+    if (inflight.has(key)) return inflight.get(key) as Promise<T>;
 
     const promise = run().catch((error) => {
         inflight.delete(key);
@@ -84,7 +93,7 @@ const withSwapId = (swapId, action, run) => {
     return promise;
 };
 
-const requireToken = (value, label) => {
+const requireToken = (value: unknown, label: string): string => {
     if (value === undefined || value === null || String(value).trim() === "") {
         throw new Error(`[swapV4_backtest] thiếu ${label}`);
     }
@@ -92,8 +101,8 @@ const requireToken = (value, label) => {
     return String(value).trim();
 };
 
-const requirePositive = (value, label) => {
-    let number;
+const requirePositive = (value: BigNumber.Value, label: string): BigNumber => {
+    let number: BigNumber;
     try {
         number = BigNumber(value);
     } catch (error) {
@@ -104,8 +113,18 @@ const requirePositive = (value, label) => {
     return number;
 };
 
-/** Giống `buildAmounts` của swapV4.js, bỏ phần decimals theo token của pool. */
-const buildAmounts = ({ isSell, amount, usdIn, usdOut }) => {
+/** Giống `buildAmounts` của swapV4.ts, bỏ phần decimals theo token của pool. */
+const buildAmounts = ({
+    isSell,
+    amount,
+    usdIn,
+    usdOut,
+}: {
+    isSell: boolean;
+    amount: BigNumber.Value;
+    usdIn: BigNumber;
+    usdOut: BigNumber;
+}): { price: BigNumber; amountIn: BigNumber; amountOut: BigNumber; fee: BigNumber } => {
     const priceSlippage = BigNumber(options.priceSlippage);
     const slippage = isSell ? BigNumber(1).plus(priceSlippage) : BigNumber(1).minus(priceSlippage);
 
@@ -128,7 +147,17 @@ const buildAmounts = ({ isSell, amount, usdIn, usdOut }) => {
  * LÕI: "đặt lệnh" giả lập, khớp ngay
  * ========================================================================== */
 
-const placeLimitOrder = async ({ isSell, idBot, chainId, swapId, tokenIn, priceTokenIn, tokenOut, priceTokenOut, amount }) => {
+const placeLimitOrder = async ({
+    isSell,
+    idBot,
+    chainId,
+    swapId,
+    tokenIn,
+    priceTokenIn,
+    tokenOut,
+    priceTokenOut,
+    amount,
+}: SwapParams & { isSell: boolean }): Promise<BacktestOrder> => {
     const nameIn = requireToken(tokenIn, "tokenIn");
     const nameOut = requireToken(tokenOut, "tokenOut");
     if (nameIn.toLowerCase() === nameOut.toLowerCase()) throw new Error("[swapV4_backtest] tokenIn và tokenOut giống nhau");
@@ -140,9 +169,9 @@ const placeLimitOrder = async ({ isSell, idBot, chainId, swapId, tokenIn, priceT
     const { price, amountIn, amountOut, fee } = buildAmounts({ isSell, amount, usdIn, usdOut });
 
     const txHash = fakeTxHash();
-    const result = {
+    const result: BacktestOrder = {
         txHash,
-        // số tokenOut nhận được — field `amount` tradeV4.js đang đọc
+        // số tokenOut nhận được — field `amount` tradeV4.ts đang đọc
         amount: amountOut.toFixed(),
         approveTxHash: null,
         side: isSell ? "SELL" : "BUY",
@@ -173,18 +202,18 @@ const placeLimitOrder = async ({ isSell, idBot, chainId, swapId, tokenIn, priceT
 };
 
 /* ============================================================================
- * 4 HÀM EXPORT — cùng chữ ký với swapV4.js
+ * 4 HÀM EXPORT — cùng chữ ký với swapV4.ts
  * ========================================================================== */
 
-const swapBuy = async (params = {}) =>
+export const swapBuy = async (params: SwapParams): Promise<BacktestOrder> =>
     withSwapId(params.swapId, "buy", () => placeLimitOrder({ ...params, isSell: false }));
 
-const swapSell = async (params = {}) =>
+export const swapSell = async (params: SwapParams): Promise<BacktestOrder> =>
     withSwapId(params.swapId, "sell", () => placeLimitOrder({ ...params, isSell: true }));
 
 /** Backtest không có allowance — trả hash giả cho đúng dạng kết quả. */
-const approve = async (params = {}) =>
-    withSwapId(params.swapId, "approve", async () => ({
+export const approve = async (params: ApproveParams): Promise<ApproveResult> =>
+    withSwapId(params.swapId, "approve", async (): Promise<ApproveResult> => ({
         txHash: fakeTxHash(),
         amount: params.amount ? BigNumber(params.amount).toFixed() : "max",
         spender: params.spender || "backtest-hook",
@@ -197,8 +226,8 @@ const approve = async (params = {}) =>
  * `mode = "WITHDRAW"` và token đã nằm sẵn trong số `amount` của swapBuy/swapSell.
  * Truyền `amount` (số đồng mua của lệnh) nếu muốn nhận lại đúng số đó.
  */
-const withdraw = async (params = {}) =>
-    withSwapId(params.swapId, "withdraw", async () => {
+export const withdraw = async (params: WithdrawParams): Promise<WithdrawResult> =>
+    withSwapId(params.swapId, "withdraw", async (): Promise<WithdrawResult> => {
         const amount = params.amount ? BigNumber(params.amount).toFixed() : "0";
 
         return {
@@ -216,22 +245,12 @@ const withdraw = async (params = {}) =>
     });
 
 /** Danh sách lệnh đã giả lập (bản copy). */
-const getBacktestOrders = () => orders.map((order) => ({ ...order }));
+export const getBacktestOrders = (): BacktestOrder[] => orders.map((order) => ({ ...order }));
 
 /** Xoá lệnh / hash / cache swapId / options — gọi trước mỗi lần backtest mới. */
-const resetBacktest = () => {
+export const resetBacktest = (): void => {
     orders.length = 0;
     inflight.clear();
     txCounter = 0;
     options = { ...DEFAULT_OPTIONS };
-};
-
-module.exports = {
-    swapBuy,
-    swapSell,
-    approve,
-    withdraw,
-    setBacktestOptions,
-    getBacktestOrders,
-    resetBacktest,
 };

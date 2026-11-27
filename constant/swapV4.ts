@@ -9,40 +9,40 @@
  */
 
 /** API pool của KeyringOne. Đổi env `KEYRING_ONE_API_URL` khi lên staging/prod. */
-const POOL_API_URL = process.env.KEYRING_ONE_API_URL || "https://keyring-one-api.bacoor-test001.xyz";
+export const POOL_API_URL: string = process.env.KEYRING_ONE_API_URL || "https://keyring-one-api.bacoor-test001.xyz";
 
 /** Cache list pool 5 phút — pool rất ít đổi, mỗi mốc bot không nên gọi lại API. */
-const POOL_CACHE_TTL_MS = 5 * 60 * 1000;
+export const POOL_CACHE_TTL_MS = 5 * 60 * 1000;
 
 /**
  * Sau khi tx approve confirm, đọc allowance tới khi RPC trả về số mới: 1s x 20 lần.
  * Không chờ thì gas estimate của `placeOrder` chạy trước lúc RPC phục vụ allowance
  * mới và revert "transfer amount exceeds allowance" dù approve đã lên chain.
  */
-const ALLOWANCE_POLL_MS = 1000;
-const ALLOWANCE_POLL_ATTEMPTS = 20;
+export const ALLOWANCE_POLL_MS = 1000;
+export const ALLOWANCE_POLL_ATTEMPTS = 20;
 
 /** Ví còn native <= mức này (0.00001) thì không đủ trả gas cho approve + placeOrder. */
-const NATIVE_GAS_BUFFER = BigInt("10000000000000");
+export const NATIVE_GAS_BUFFER = BigInt("10000000000000");
 
 /** Số decimals của giá limit, bằng với "Marker" của UI. */
-const PRICE_DECIMALS = 4;
+export const PRICE_DECIMALS = 4;
 
 /* ------------------------------ tick math ------------------------------- */
 
-const MIN_TICK = -887272;
-const MAX_TICK = 887272;
+export const MIN_TICK = -887272;
+export const MAX_TICK = 887272;
 
-const ZERO = BigInt(0);
-const ONE = BigInt(1);
-const Q96 = ONE << BigInt(96);
-const MAX_UINT256 = (ONE << BigInt(256)) - ONE;
+export const ZERO = BigInt(0);
+export const ONE = BigInt(1);
+export const Q96 = ONE << BigInt(96);
+export const MAX_UINT256 = (ONE << BigInt(256)) - ONE;
 
 /**
  * Hằng số của `TickMath.getSqrtRatioAtTick` (Uniswap v3/v4 core).
  * [bit của |tick|, hệ số Q128.128 tương ứng].
  */
-const SQRT_RATIO_MULTIPLIERS = [
+export const SQRT_RATIO_MULTIPLIERS: ReadonlyArray<readonly [bigint, bigint]> = [
     [BigInt("0x2"), BigInt("0xfff97272373d413259a46990580e213a")],
     [BigInt("0x4"), BigInt("0xfff2e50f5f656932ef12357cf3c7fdcc")],
     [BigInt("0x8"), BigInt("0xffe5caca7e10e4e61c3624eaa0941cd0")],
@@ -65,21 +65,4 @@ const SQRT_RATIO_MULTIPLIERS = [
 ];
 
 /** Hệ số của tick lẻ (bit 0x1). */
-const SQRT_RATIO_ODD_TICK = BigInt("0xfffcb933bd6fad37aa2d162d1a594001");
-
-module.exports = {
-    POOL_API_URL,
-    POOL_CACHE_TTL_MS,
-    ALLOWANCE_POLL_MS,
-    ALLOWANCE_POLL_ATTEMPTS,
-    NATIVE_GAS_BUFFER,
-    PRICE_DECIMALS,
-    MIN_TICK,
-    MAX_TICK,
-    ZERO,
-    ONE,
-    Q96,
-    MAX_UINT256,
-    SQRT_RATIO_MULTIPLIERS,
-    SQRT_RATIO_ODD_TICK,
-};
+export const SQRT_RATIO_ODD_TICK = BigInt("0xfffcb933bd6fad37aa2d162d1a594001");

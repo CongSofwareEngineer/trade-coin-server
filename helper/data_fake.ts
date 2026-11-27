@@ -1,4 +1,6 @@
-const ARR_TOKEN = [
+import type { PricePoint } from "../types/trade";
+
+export const ARR_TOKEN: PricePoint[] = [
     {
         "time": "09/10/2026 00:00",
         "arrToken": [
@@ -41128,7 +41130,3 @@ const ARR_TOKEN = [
         ]
     }
 ]
-
-module.exports = {
-    ARR_TOKEN
-};

@@ -4,11 +4,11 @@
  * ============================================================================
  *
  * File này KHÔNG có logic, chỉ có data. Đọc file này là đủ để biết phải lưu gì
- * xuống DB và nhận lại gì từ `tradeV4.js`, không cần đọc thuật toán.
+ * xuống DB và nhận lại gì từ `tradeV4.ts`, không cần đọc thuật toán.
  *
  * Bộ số dưới đây là một bot 3 token (ETH / BTC / BNB) chạy 4 mốc giá, cố tình
  * chọn giá tròn để dễ nhẩm. Mọi `HISTORY_*` và `CONFIG_*` đều là output THẬT
- * của `tradeV4.js` khi nạp các `ARR_TOKEN_*` trong file này.
+ * của `tradeV4.ts` khi nạp các `ARR_TOKEN_*` trong file này.
  *
  * ---------------------------------------------------------------------------
  * 4 HÀM — tất cả đều trả về { history, config }
@@ -40,84 +40,24 @@
  *   DEPOSIT        register xong. Không có tx.
  *   NOSWAP         mốc giá bình thường, chưa đủ điều kiện. Không có tx.
  *   SWAP_PENDING   mốc này ĐÃ GỬI tx swap. CHƯA chắc tx thành công onchain —
- *                  `swapV4.js` chỉ tạo hash rồi trả về ngay, không chờ confirm.
+ *                  `swapV4.ts` chỉ tạo hash rồi trả về ngay, không chờ confirm.
  *                  Theo dõi `txHash` để set `status` là việc của server.
  *   WITHDRAW       đã gửi tx swap hết về đồng gốc, bot dừng (config.isStop = true).
  *   RESET          đã gửi tx swap hết về đồng gốc, và mở vòng mới luôn.
  *
  * ---------------------------------------------------------------------------
- * SCHEMA MẪU — 2 collection
+ * TYPE + SCHEMA DATABASE — nằm riêng ở thư mục `types/`
  * ---------------------------------------------------------------------------
  *
- * 1) SETTING — một bản ghi / một bot
+ *   types/trade.ts      type của mọi khối dưới đây (ArrTokenInput, TradeConfig,
+ *                       TradeHistory, ...) — mỗi field có chú thích
+ *   types/database.ts   SettingV4Document / HistoryV4Document + mẫu mongoose,
+ *                       index đề xuất, enum HISTORY_ACTIONS / HISTORY_STATUSES
  *
- *     const SettingV4Schema = new Schema({
- *       userId:  { type: ObjectId, index: true },
- *       chainId: { type: String },              // "56"
- *       minute:  { type: Number },              // phút trong giờ để cron gom bot
+ *   Mỗi khối data trong file này đều khai type, nên sửa type mà data lệch là
+ *   `npm run typecheck` báo lỗi ngay.
  *
- *       // ----- khối của thuật toán: LƯU NGUYÊN KHỐI, KHÔNG lưu một phần -----
- *       config:  { type: Schema.Types.Mixed },
- *
- *       // ----- server tự quản, thuật toán không đọc -----
- *       lastSwapId: { type: String },                   // đang có tx thì khoá, không chạy mốc mới
- *       closed:     { type: Boolean, default: false },  // set true khi config.isStop = true
- *       deleted:    { type: Boolean, default: false },
- *     }, { timestamps: true });
- *
- *   `config` để Mixed là CỐ Ý: `state.ETHLastSwap`, `state.price1Point`,
- *   `state.perETHOriginal` là map có key là symbol của chính bot đó, còn
- *   `itemPre.arrToken` dài theo số token của bot (3, 5, 7 token đều được).
- *   Khai cứng từng field sẽ vỡ ngay khi mở bot 5 token.
- *
- *   Muốn khai rõ thì theo đúng 4 nhánh của `CONFIG_AFTER_REGISTER`:
- *
- *     config.userConfig  { amountStart, inputStart, volatility }
- *     config.state       { amountInput, outputSwap, outputSwapTemp, ETHLastSwap,
- *                          perETHOriginal, ETHOriginalAmount, price1Point }
- *     config.itemPre     { arrToken: [{ symbol, address, price, perETH,
- *                          perETHChangePercentage, pointAfterCheck }] }
- *     config.isStop      Boolean
- *
- * 2) HISTORY — một bản ghi / một mốc giá
- *
- *     const HistoryV4Schema = new Schema({
- *       tradingSettingId: { type: ObjectId, index: true },
- *
- *       // ----- nguyên văn `history` của tradeV4.js, không sửa, không bớt -----
- *       action:        { type: String },   // DEPOSIT | NOSWAP | SWAP_PENDING | WITHDRAW | RESET
- *       isSwap:        { type: Boolean },
- *       inputSwap:     { type: String },   // symbol token đem swap,  null nếu không swap
- *       outputSwap:    { type: String },   // symbol token nhận về,   null nếu không swap
- *       amountSwap:    { type: String },   // số token nhận về,       null nếu không swap
- *       txHash:        { type: String },   // null nếu không swap
- *       currentToken:  { type: String },   // đang nắm giữ SAU khi xử lý mốc này
- *       currentAmount: { type: String },
- *       arrToken:      [{
- *         symbol:                 String,
- *         address:                String,
- *         price:                  String,  // giá USD của mốc này
- *         perETH:                 String,  // giá quy ra ETH
- *         perETHChangePercentage: String,  // biến động perETH so với mốc trước
- *         changeByPoint:          String,  // biến động quy ra điểm
- *         pointAfterCheck:        String,  // điểm của mốc này (mốc có swap thì kéo về 1000)
- *       }],
- *       amountWithdraw: { type: String },  // CHỈ action WITHDRAW
- *       pnl:            { type: String },  // CHỈ action WITHDRAW — so với userConfig.amountStart
- *
- *       // ----- server tự quản, thuật toán không đọc -----
- *       swapId:  { type: String, index: true },
- *       status:  { type: String },         // PENDING | PROCESSING | SUCCESS | FAILED
- *       retries: { type: Number, default: 0 },
- *     }, { timestamps: true });
- *
- *   Lưu ĐÚNG các field trên, không thêm. `pointBeforeCheck` và
- *   `ETHLastSwapTemp` là biến xử lý trong một mốc, không lưu DB: cái đầu không
- *   được đọc lại ở đâu, cái sau luôn được ghi rồi đọc trong cùng một mốc.
- *
- *   MỌI SỐ ĐỀU LÀ STRING, KHÔNG DÙNG Number. Giá và số token là BigNumber 20+
- *   chữ số thập phân (vd perETH "41.66666666666666666667"). Number của JS làm
- *   tròn mất, mốc sau đọc lại là tính lệch, càng chạy càng lệch.
+ *   MỌI SỐ ĐỀU LÀ STRING, KHÔNG DÙNG Number (xem `DecimalString`).
  *
  * ---------------------------------------------------------------------------
  * arrToken — INPUT server phải chuẩn bị mỗi mốc
@@ -176,12 +116,27 @@
  * ============================================================================
  */
 
+import type {
+  ArrTokenInput,
+  RegisterConfigInput,
+  SwapParams,
+  SwapResult,
+  TradeConfig,
+  TradeHistory,
+} from "../types";
+
+/** Một lần gọi hàm swap: tham số vào + kết quả ra. */
+export interface SwapCall {
+  in: Omit<SwapParams, "priceTokenIn" | "priceTokenOut"> & Partial<Pick<SwapParams, "priceTokenIn" | "priceTokenOut">>;
+  out: SwapResult;
+}
+
 // ============================================================================
 // INPUT — arrToken của 4 mốc giá
 // ============================================================================
 
 // Mốc register: ETH 2500, BTC 100000, BNB 650.
-const ARR_TOKEN_REGISTER = [
+export const ARR_TOKEN_REGISTER: ArrTokenInput[] = [
   {
     "symbol": "ETH",
     "address": "0x2170Ed0880ac9A755fd29B2688956BD959F933F8",
@@ -200,7 +155,7 @@ const ARR_TOKEN_REGISTER = [
 ];
 
 // Mốc 1: BNB giảm 1% so với ETH → ứng viên BNB, nhưng chưa swap.
-const ARR_TOKEN_T1 = [
+export const ARR_TOKEN_T1: ArrTokenInput[] = [
   {
     "symbol": "ETH",
     "address": "0x2170Ed0880ac9A755fd29B2688956BD959F933F8",
@@ -219,7 +174,7 @@ const ARR_TOKEN_T1 = [
 ];
 
 // Mốc 2: ETH giảm 4% → ứng viên là chính đồng đang giữ, không swap.
-const ARR_TOKEN_T2 = [
+export const ARR_TOKEN_T2: ArrTokenInput[] = [
   {
     "symbol": "ETH",
     "address": "0x2170Ed0880ac9A755fd29B2688956BD959F933F8",
@@ -238,7 +193,7 @@ const ARR_TOKEN_T2 = [
 ];
 
 // Mốc 3: BNB giảm 0.54% so với ETH → đủ điều kiện, swap ETH sang BNB.
-const ARR_TOKEN_T3 = [
+export const ARR_TOKEN_T3: ArrTokenInput[] = [
   {
     "symbol": "ETH",
     "address": "0x2170Ed0880ac9A755fd29B2688956BD959F933F8",
@@ -257,7 +212,7 @@ const ARR_TOKEN_T3 = [
 ];
 
 // Mốc 4: dùng cho withdraw / reset (giá giữ nguyên như mốc 3).
-const ARR_TOKEN_T4 = [
+export const ARR_TOKEN_T4: ArrTokenInput[] = [
   {
     "symbol": "ETH",
     "address": "0x2170Ed0880ac9A755fd29B2688956BD959F933F8",
@@ -280,7 +235,7 @@ const ARR_TOKEN_T4 = [
 // ============================================================================
 
 // amountStart: số user nạp | inputStart: nạp bằng đồng gì | volatility: ngưỡng biến động %
-const CONFIG_REGISTER_INPUT = {
+export const CONFIG_REGISTER_INPUT: RegisterConfigInput = {
   "amountStart": "1",
   "inputStart": "ETH",
   "volatility": "0.3"
@@ -291,7 +246,7 @@ const CONFIG_REGISTER_INPUT = {
 // ============================================================================
 
 // INSERT vào history. Không có tx: inputSwap/outputSwap/amountSwap/txHash = null.
-const HISTORY_DEPOSIT = {
+export const HISTORY_DEPOSIT: TradeHistory = {
   "action": "DEPOSIT",
   "isSwap": false,
   "inputSwap": null,
@@ -332,7 +287,7 @@ const HISTORY_DEPOSIT = {
 };
 
 // UPDATE vào bot. Mốc giá đầu tiên truyền NGUYÊN KHỐI này vào runTradeV4.
-const CONFIG_AFTER_REGISTER = {
+export const CONFIG_AFTER_REGISTER: TradeConfig = {
   "userConfig": {
     "amountStart": "1",
     "inputStart": "ETH",
@@ -395,7 +350,7 @@ const CONFIG_AFTER_REGISTER = {
 // ============================================================================
 
 // action NOSWAP — không tx. BNB biến động -1% nhưng chưa vượt mốc lần xét trước.
-const HISTORY_NOSWAP_T1 = {
+export const HISTORY_NOSWAP_T1: TradeHistory = {
   "action": "NOSWAP",
   "isSwap": false,
   "inputSwap": null,
@@ -436,7 +391,7 @@ const HISTORY_NOSWAP_T1 = {
 };
 
 // state.ETHLastSwap.BNB dời xuống 0.2574, outputSwapTemp = BNB (ứng viên mốc này).
-const CONFIG_AFTER_T1 = {
+export const CONFIG_AFTER_T1: TradeConfig = {
   "userConfig": {
     "amountStart": "1",
     "inputStart": "ETH",
@@ -499,7 +454,7 @@ const CONFIG_AFTER_T1 = {
 // ============================================================================
 
 // action NOSWAP — ứng viên là ETH, đúng đồng bot đang giữ nên không swap.
-const HISTORY_NOSWAP_T2 = {
+export const HISTORY_NOSWAP_T2: TradeHistory = {
   "action": "NOSWAP",
   "isSwap": false,
   "inputSwap": null,
@@ -540,7 +495,7 @@ const HISTORY_NOSWAP_T2 = {
 };
 
 // outputSwapTemp = ETH. Nhờ vậy mốc 3 ứng viên BNB mới qua được tầng 1.
-const CONFIG_AFTER_T2 = {
+export const CONFIG_AFTER_T2: TradeConfig = {
   "userConfig": {
     "amountStart": "1",
     "inputStart": "ETH",
@@ -602,10 +557,10 @@ const CONFIG_AFTER_T2 = {
 // OUTPUT — mốc 3: runTradeV4(CONFIG_AFTER_T2, ARR_TOKEN_T3) → CÓ SWAP
 // ============================================================================
 
-// tradeV4.js gọi swapV4.swapOnchainV4(IN) và nhận OUT.
+// tradeV4.ts gọi hàm swap (swapBuy của swapV4.ts) với IN và nhận OUT.
 // OUT.amount là số tokenOut của lệnh VỪA GỬI — không chờ tx confirm onchain.
 // amount trong IN là số tokenIn đem swap, đơn vị token (KHÔNG phải wei).
-const SWAP_CALL = {
+export const SWAP_CALL: SwapCall = {
   "in": {
     "idBot": "68f1c0a9e3b94a0012ab34cd",
     "chainId": "56",
@@ -622,7 +577,7 @@ const SWAP_CALL = {
 
 // action SWAP_PENDING. amountSwap = SWAP_CALL.out.amount (lấy nguyên, không tính lại).
 // pointAfterCheck của cả 3 token về 1000 vì mốc này có swap.
-const HISTORY_SWAP_PENDING = {
+export const HISTORY_SWAP_PENDING: TradeHistory = {
   "action": "SWAP_PENDING",
   "isSwap": true,
   "inputSwap": "ETH",
@@ -664,7 +619,7 @@ const HISTORY_SWAP_PENDING = {
 
 // amountInput + outputSwap đổi sang BNB. ETHLastSwap.BNB dời theo ứng viên,
 // perETHOriginal.BNB vẫn giữ mốc gốc 0.26. itemPre.arrToken là mốc 3.
-const CONFIG_AFTER_SWAP = {
+export const CONFIG_AFTER_SWAP: TradeConfig = {
   "userConfig": {
     "amountStart": "1",
     "inputStart": "ETH",
@@ -727,7 +682,7 @@ const CONFIG_AFTER_SWAP = {
 // ============================================================================
 
 // Swap hết 3.7425 BNB đang giữ về ETH (= userConfig.inputStart).
-const SWAP_CALL_WITHDRAW = {
+export const SWAP_CALL_WITHDRAW: SwapCall = {
   "in": {
     "idBot": "68f1c0a9e3b94a0012ab34cd",
     "chainId": "56",
@@ -744,7 +699,7 @@ const SWAP_CALL_WITHDRAW = {
 
 // action WITHDRAW, có thêm amountWithdraw và pnl.
 // pnl = amountWithdraw - userConfig.amountStart (vào/ra cùng một đồng nên trừ thẳng).
-const HISTORY_WITHDRAW = {
+export const HISTORY_WITHDRAW: TradeHistory = {
   "action": "WITHDRAW",
   "isSwap": true,
   "inputSwap": "BNB",
@@ -788,7 +743,7 @@ const HISTORY_WITHDRAW = {
 
 // isStop = true → gọi run/withdraw/reset với config này sẽ throw.
 // Server nên set closed = true cho bot. Chuyển tiền về ví user làm sau khi tx lên chain.
-const CONFIG_AFTER_WITHDRAW = {
+export const CONFIG_AFTER_WITHDRAW: TradeConfig = {
   "userConfig": {
     "amountStart": "1",
     "inputStart": "ETH",
@@ -852,7 +807,7 @@ const CONFIG_AFTER_WITHDRAW = {
 
 // action RESET. inputSwap/outputSwap/amountSwap/txHash là lệnh swap về đồng gốc;
 // arrToken + currentAmount đã là trạng thái ĐẦU VÒNG MỚI (điểm 1000, biến động 0).
-const HISTORY_RESET = {
+export const HISTORY_RESET: TradeHistory = {
   "action": "RESET",
   "isSwap": true,
   "inputSwap": "BNB",
@@ -894,7 +849,7 @@ const HISTORY_RESET = {
 
 // Vòng mới: amountStart = số vừa swap về, điểm 1000, price1Point khoá lại theo
 // giá mốc reset, perETHOriginal/ETHLastSwap lấy perETH mốc reset. isStop = false.
-const CONFIG_AFTER_RESET = {
+export const CONFIG_AFTER_RESET: TradeConfig = {
   "userConfig": {
     "amountStart": "0.996004",
     "inputStart": "ETH",
@@ -975,30 +930,3 @@ const CONFIG_AFTER_RESET = {
 //
 //   resetTradeV4({ config: CONFIG_AFTER_SWAP, arrToken: ARR_TOKEN_T4, ... })
 //       → { history: HISTORY_RESET,        config: CONFIG_AFTER_RESET }      // vòng mới
-
-module.exports = {
-  // input
-  CONFIG_REGISTER_INPUT,
-  ARR_TOKEN_REGISTER,
-  ARR_TOKEN_T1,
-  ARR_TOKEN_T2,
-  ARR_TOKEN_T3,
-  ARR_TOKEN_T4,
-  // gọi sang swapV4.js
-  SWAP_CALL,
-  SWAP_CALL_WITHDRAW,
-  // output: history
-  HISTORY_DEPOSIT,
-  HISTORY_NOSWAP_T1,
-  HISTORY_NOSWAP_T2,
-  HISTORY_SWAP_PENDING,
-  HISTORY_WITHDRAW,
-  HISTORY_RESET,
-  // output: config
-  CONFIG_AFTER_REGISTER,
-  CONFIG_AFTER_T1,
-  CONFIG_AFTER_T2,
-  CONFIG_AFTER_SWAP,
-  CONFIG_AFTER_WITHDRAW,
-  CONFIG_AFTER_RESET,
-};

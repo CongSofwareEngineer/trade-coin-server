@@ -15,21 +15,40 @@
  * ============================================================================
  */
 
-const { createPublicClient, createWalletClient, erc20Abi, http } = require("viem");
-const { privateKeyToAccount } = require("viem/accounts");
-const viemChains = require("viem/chains");
-const { ALLOWANCE_POLL_ATTEMPTS, ALLOWANCE_POLL_MS } = require("../constant/swapV4");
+import {
+    createPublicClient,
+    createWalletClient,
+    erc20Abi,
+    http,
+    type Account,
+    type Address,
+    type Chain,
+    type Hex,
+    type PublicClient,
+    type Transport,
+    type WalletClient,
+} from "viem";
+import { privateKeyToAccount } from "viem/accounts";
+import * as viemChains from "viem/chains";
+import { ALLOWANCE_POLL_ATTEMPTS, ALLOWANCE_POLL_MS } from "../constant/swapV4";
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+/** public client + wallet client của một (chain, ví). */
+export interface BotClients {
+    account: Account;
+    publicClient: PublicClient<Transport, Chain>;
+    walletClient: WalletClient<Transport, Chain, Account>;
+}
+
+export const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** `idBot` → tên biến môi trường, vd "bot-1" → "BOT_1". */
-const toEnvKey = (idBot) => String(idBot || "").trim().replace(/[^0-9a-zA-Z]+/g, "_").toUpperCase();
+const toEnvKey = (idBot: string | number | null | undefined): string => String(idBot || "").trim().replace(/[^0-9a-zA-Z]+/g, "_").toUpperCase();
 
 /**
  * Private key ví ký của bot. Truyền thẳng `privateKey` để bỏ qua env (server
  * tự quản ví).
  */
-const resolvePrivateKey = ({ idBot, privateKey }) => {
+export const resolvePrivateKey = ({ idBot, privateKey }: { idBot: string | number; privateKey?: string }): Hex => {
     const key =
         privateKey ||
         process.env[`BOT_PRIVATE_KEY_${toEnvKey(idBot)}`] ||
@@ -40,13 +59,15 @@ const resolvePrivateKey = ({ idBot, privateKey }) => {
 
     const hex = String(key).trim();
 
-    return hex.startsWith("0x") ? hex : `0x${hex}`;
+    return (hex.startsWith("0x") ? hex : `0x${hex}`) as Hex;
 };
 
 /** Chain object của viem theo chainId. */
-const resolveChain = (chainId) => {
+export const resolveChain = (chainId: string | number): Chain => {
     const id = Number(chainId);
-    const chain = Object.values(viemChains).find((item) => item && item.id === id);
+    const chain = (Object.values(viemChains) as unknown[]).find(
+        (item): item is Chain => !!item && typeof item === "object" && (item as Chain).id === id
+    );
 
     if (!chain) throw new Error(`[web3V4] viem không có chain ${chainId}`);
 
@@ -54,17 +75,23 @@ const resolveChain = (chainId) => {
 };
 
 /** RPC của chain: ưu tiên env của server. */
-const resolveRpcUrl = (chainId) => process.env[`RPC_URL_${Number(chainId)}`] || undefined;
+export const resolveRpcUrl = (chainId: string | number): string | undefined => process.env[`RPC_URL_${Number(chainId)}`] || undefined;
 
-const clientCache = new Map();
+const clientCache = new Map<string, BotClients>();
 
 /**
  * public client + wallet client của một (chain, ví). Cache lại để không tạo
  * lại mỗi mốc bot.
- *
- * @returns {{ account: Object, publicClient: Object, walletClient: Object }}
  */
-const getClients = ({ chainId, idBot, privateKey }) => {
+export const getClients = ({
+    chainId,
+    idBot,
+    privateKey,
+}: {
+    chainId: string | number;
+    idBot: string | number;
+    privateKey?: string;
+}): BotClients => {
     const pk = resolvePrivateKey({ idBot, privateKey });
     const cacheKey = `${Number(chainId)}-${pk.slice(-8)}`;
     const cached = clientCache.get(cacheKey);
@@ -74,9 +101,9 @@ const getClients = ({ chainId, idBot, privateKey }) => {
     const transport = http(resolveRpcUrl(chainId));
     const account = privateKeyToAccount(pk);
 
-    const clients = {
+    const clients: BotClients = {
         account,
-        publicClient: createPublicClient({ chain, transport }),
+        publicClient: createPublicClient({ chain, transport }) as PublicClient<Transport, Chain>,
         walletClient: createWalletClient({ account, chain, transport }),
     };
     clientCache.set(cacheKey, clients);
@@ -85,7 +112,17 @@ const getClients = ({ chainId, idBot, privateKey }) => {
 };
 
 /** Balance native + balance token + allowance của ví với spender. */
-const readPreflight = async ({ publicClient, owner, token, spender }) => {
+export const readPreflight = async ({
+    publicClient,
+    owner,
+    token,
+    spender,
+}: {
+    publicClient: BotClients["publicClient"];
+    owner: Address;
+    token: Address;
+    spender: Address;
+}): Promise<{ nativeBalance: bigint; tokenBalance: bigint; allowance: bigint }> => {
     const [nativeBalance, tokenBalance, allowance] = await Promise.all([
         publicClient.getBalance({ address: owner }),
         publicClient.readContract({ abi: erc20Abi, address: token, functionName: "balanceOf", args: [owner] }),
@@ -102,7 +139,21 @@ const readPreflight = async ({ publicClient, owner, token, spender }) => {
  * allowance mới và revert "transfer amount exceeds allowance" dù approve đã
  * lên chain (đã gặp trên Base — xem logManualLimitOrder.md).
  */
-const sendApprove = async ({ publicClient, walletClient, owner, token, spender, amount }) => {
+export const sendApprove = async ({
+    publicClient,
+    walletClient,
+    owner,
+    token,
+    spender,
+    amount,
+}: {
+    publicClient: BotClients["publicClient"];
+    walletClient: BotClients["walletClient"];
+    owner: Address;
+    token: Address;
+    spender: Address;
+    amount: bigint;
+}): Promise<Hex> => {
     const hash = await walletClient.writeContract({
         abi: erc20Abi,
         address: token,
@@ -121,14 +172,4 @@ const sendApprove = async ({ publicClient, walletClient, owner, token, spender, 
     }
 
     return hash;
-};
-
-module.exports = {
-    sleep,
-    resolvePrivateKey,
-    resolveChain,
-    resolveRpcUrl,
-    getClients,
-    readPreflight,
-    sendApprove,
 };

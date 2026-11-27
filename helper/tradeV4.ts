@@ -11,13 +11,13 @@
  * KHÁC BACKTEST Ở ĐÂU
  * ---------------------------------------------------------------------------
  *
- *   indexV4.ts (backtest)                 tradeV4.js (chạy thật)
+ *   indexV4.ts (backtest)                 tradeV4.ts (chạy thật)
  *   -----------------------------------   -----------------------------------
  *   listData[] — cả mảng lịch sử          MỘT mốc giá mỗi lần gọi
  *   for (index = 1..n) calculateData      không có for, mốc trước lấy từ config
  *   listData[index - 1]                   config.itemPre
  *   state là biến trong RAM               config.state, caller tự lưu DB
- *   số nhận về tính theo giá              số nhận về do swapV4.js trả
+ *   số nhận về tính theo giá              số nhận về do swapV4.ts trả
  *   swap là phép tính                     swap = GỬI tx, không chờ confirm
  *   không có address                      arrToken phải có address để swap
  *   try/catch rồi return sớm              throw ra ngoài, caller không lưu config
@@ -31,7 +31,10 @@
  *   withdrawTradeV4({ config, arrToken, ... })  swap hết về inputStart rồi DỪNG bot (stop).
  *   resetTradeV4({ config, arrToken, ... })     swap hết về inputStart rồi CHẠY LẠI TỪ ĐẦU.
  *
- * Cả 4 hàm LUÔN trả về đúng một dạng:  { history, config }
+ * Cả 4 hàm LUÔN trả về đúng một dạng:  { history, config }   (`TradeResult`)
+ *
+ * ⚠ TYPE CỦA MỌI DỮ LIỆU VÀO / RA nằm riêng ở `types/trade.ts`, schema DB gợi ý
+ *   ở `types/database.ts` — team server đọc 2 file đó, không cần đọc file này.
  *
  *   history  bản ghi của mốc này → lưu vào collection history
  *   config   state mới → lưu đè xuống DB, mốc sau truyền lại vào đây
@@ -95,11 +98,11 @@
  * Mốc sau xét lại từ đầu theo giá mới. Đừng chạy hai mốc song song cho cùng
  * một bot.
  *
- * SWAP CHỈ GỬI TX, KHÔNG CHỜ CONFIRM. `swapV4.js` tạo hash rồi trả về ngay —
+ * SWAP CHỈ GỬI TX, KHÔNG CHỜ CONFIRM. `swapV4.ts` tạo hash rồi trả về ngay —
  * chờ tx lên chain thì rất lâu mà không cần thiết. Nên:
  *   - `history.action = "SWAP_PENDING"`, không phải "SWAP": mốc này chắc chắn
  *     đã GỬI tx, chưa chắc đã swap xong
- *   - `config` lưu luôn số swapV4.js trả về, coi như mốc sau chạy trên số đó
+ *   - `config` lưu luôn số swapV4.ts trả về, coi như mốc sau chạy trên số đó
  *   - theo dõi `history.txHash` về sau là việc của server. Tx fail onchain thì
  *     file này không biết, lúc đó số trong config lệch với số dư thật
  *
@@ -107,52 +110,68 @@
  * ============================================================================
  */
 
-const BigNumber = require("bignumber.js");
-const { swapBuy } = require("./swapV4");
-const { uppercase } = require("../utils/token");
-
-// ================== Types & Config ==================
+import BigNumber from "bignumber.js";
+import { uppercase } from "../utils/token";
+import { HISTORY_ACTION } from "../types/trade";
+import type {
+    ArrTokenInput,
+    HistoryAction,
+    HistoryToken,
+    ItemPre,
+    RegisterConfigInput,
+    RegisterTradeParams,
+    RunTradeParams,
+    SwapFields,
+    TokenPre,
+    TradeConfig,
+    TradeHistory,
+    TradeResult,
+    TradeState,
+    UserConfig,
+} from "../types/trade";
+import type { SwapFn } from "../types/swap";
 
 /**
- * @typedef {Object} Token
- * @property {string} symbol
- * @property {string} address                   KHÁC BACKTEST: cần để swap thật
- * @property {string} price
- * @property {string} [perETH]
- * @property {string} [perETHChangePercentage]
- * @property {string} [changeByPoint]           v4
- * @property {string} [pointAfterCheck]         v4
+ * ⚠️ NOTE CHO TEAM SERVER — WEB3 SWAP THẬT ĐÃ TẮT TRONG HELPER:
+ *   Trước đây khi caller KHÔNG truyền `swap`, helper tự gọi `swapBuy` của
+ *   swapV4.ts (viem + RPC → gửi tx onchain). Phần đó đã được comment lại:
+ *   helper KHÔNG gửi tx nào nữa. Server tự gọi web3 swap / đặt limit-order ở
+ *   những chỗ đánh dấu `TODO(server)` (xem `onSwap` và `unwindToInputStart`).
  *
- * @typedef {Object<string, string>} SwapState
+ *   `swap` truyền vào (backtest / test) vẫn chạy như cũ — đó là hàm giả, không
+ *   chạm chain.
  *
- * @typedef {Object} Item
- * @property {Token[]} arrToken
- * @property {boolean} [isSwap]
- * @property {string} [inputSwap]
- * @property {string} [outputSwap]
- * @property {string} [amountSwap]
- * @property {string} [txHash]                  KHÁC BACKTEST: tx của swap thật
+ * ---- [TẠM TẮT] web3 swap mặc định, server tự gọi phía ngoài ----
+ * import type { SwapParams, SwapResult } from "../types/swap";
  *
- * @typedef {Object} UserConfig
- * @property {string} amountStart
- * @property {string} inputStart                symbol token bỏ vào lúc đầu
- * @property {string} volatility
+ * const defaultSwap: SwapFn = async (params: SwapParams): Promise<SwapResult> => {
+ *     const { swapBuy } = await import("./swapV4.js");
  *
- * @typedef {Object} State
- * @property {string} amountInput
- * @property {string} outputSwap
- * @property {string} outputSwapTemp
- * @property {SwapState} ETHLastSwap
- * @property {SwapState} perETHOriginal
- * @property {string} ETHOriginalAmount
- * @property {SwapState} price1Point            v4: giá ứng 1 point, giá đầu kỳ / 1000
- *
- * @typedef {Object} Config
- * @property {UserConfig} userConfig
- * @property {State} state
- * @property {Item} itemPre
- * @property {boolean} [isStop]
+ *     return swapBuy(params);
+ * };
+ * ---------------------------------------------------------------------
  */
+
+// ================== Types & Config ==================
+// Type public (config / history / arrToken) khai ở types/trade.ts.
+
+/** Token trong lúc xử lý một mốc: 3 field đầu vào + các chỉ số tính dần. */
+type WorkToken = Pick<HistoryToken, "symbol" | "address" | "price"> &
+    Partial<Omit<HistoryToken, "symbol" | "address" | "price">>;
+
+/** Một mốc giá đang xử lý (thay cho phần tử của listData trong indexV4.ts). */
+interface Item extends Partial<SwapFields> {
+    arrToken: WorkToken[];
+}
+
+/** Tham số hàm swap mà run / withdraw / reset cần. */
+interface SwapCtx {
+    idBot: string | number;
+    chainId: string | number;
+    swapId?: string;
+    /** Chỉ có khi caller truyền hàm swap giả (backtest / test). Không có → placeholder cho server. */
+    swap?: SwapFn;
+}
 
 /** Điểm khởi tạo mỗi token. Swap xong, token đích được kéo về mốc này. */
 const BASE_POINT = "1000";
@@ -161,21 +180,15 @@ const BASE_POINT = "1000";
 const RESET_POINT_MULTIPLIER = 10;
 
 /**
- * `SWAP_PENDING`: swapV4.js chỉ GỬI tx rồi trả hash ngay, KHÔNG chờ tx thành
+ * `SWAP_PENDING`: hàm swap chỉ GỬI tx rồi trả hash ngay, KHÔNG chờ tx thành
  * công onchain (chờ rất lâu mà không cần thiết). Nên mốc có swap chỉ chắc chắn
  * "đã gửi tx", chưa chắc "đã swap xong" — tên action nói đúng điều đó. Việc
  * theo dõi hash đó về sau là của server.
  */
-const ACTION = {
-    DEPOSIT: "DEPOSIT",
-    SWAP_PENDING: "SWAP_PENDING",
-    NOSWAP: "NOSWAP",
-    WITHDRAW: "WITHDRAW",
-    RESET: "RESET",
-};
+const ACTION = HISTORY_ACTION;
 
 /** Phần "lệnh swap" của history khi mốc đó không swap. */
-const NO_SWAP = Object.freeze({
+export const NO_SWAP: Readonly<SwapFields> = Object.freeze({
     isSwap: false,
     inputSwap: null,
     outputSwap: null,
@@ -185,7 +198,7 @@ const NO_SWAP = Object.freeze({
 
 // ================== Utility Functions ==================
 
-const deepClone = (obj) => JSON.parse(JSON.stringify(obj));
+const deepClone = <T>(obj: T): T => JSON.parse(JSON.stringify(obj));
 
 /**
  * KHÁC BACKTEST: backtest nhận normalizeSymbol(listData) cho cả mảng lịch sử,
@@ -193,7 +206,7 @@ const deepClone = (obj) => JSON.parse(JSON.stringify(obj));
  * backtest không cần: address bắt buộc (để swap), giá phải là số dương, symbol
  * không được trùng.
  */
-const normalizeSymbol = (arrToken) => {
+const normalizeSymbol = (arrToken: ArrTokenInput[] | undefined): WorkToken[] => {
     if (!Array.isArray(arrToken) || arrToken.length === 0) {
         throw new Error("[tradeV4] arrToken rỗng");
     }
@@ -223,9 +236,9 @@ const normalizeSymbol = (arrToken) => {
 };
 
 /** bignumber.js bản này THROW với chuỗi rác (vd "abc") thay vì trả NaN. */
-const toNumberOrNull = (value) => {
+const toNumberOrNull = (value: unknown): BigNumber | null => {
     try {
-        const num = BigNumber(value);
+        const num = BigNumber(value as BigNumber.Value);
 
         return num.isFinite() ? num : null;
     } catch (error) {
@@ -234,27 +247,29 @@ const toNumberOrNull = (value) => {
 };
 
 
-const getTokenETH = (arrToken = []) => {
+const getTokenETH = (arrToken: WorkToken[] = []): WorkToken | undefined => {
     return arrToken.find((token) => uppercase(token.symbol) === "ETH");
 };
 
-const getTokenBTC = (arrToken = []) => {
+const getTokenBTC = (arrToken: WorkToken[] = []): WorkToken | undefined => {
     return arrToken.find((token) => uppercase(token.symbol) === "BTC");
 };
 
-const getTokenBySymbol = (arrToken = [], symbol) => {
+const getTokenBySymbol = (arrToken: WorkToken[] = [], symbol: string): WorkToken | undefined => {
     return arrToken.find((token) => {
         return uppercase(token.symbol) === uppercase(symbol)
     });
 };
 
 //token có perETHChangePercentage nhỏ nhất => token sẽ swap ra
-const getTokenMinChangePercentage = (arrToken = []) => {
+const getTokenMinChangePercentage = (arrToken: WorkToken[] = []): WorkToken => {
     const minChangePercentage = arrToken.reduce((min, token) => {
-        return BigNumber(min).lt(token.perETHChangePercentage) ? min : token.perETHChangePercentage;
-    }, arrToken[0].perETHChangePercentage);
+        return BigNumber(min).lt(token.perETHChangePercentage as string) ? min : (token.perETHChangePercentage as string);
+    }, arrToken[0].perETHChangePercentage as string);
 
-    return arrToken.find((token) => BigNumber(minChangePercentage).isEqualTo(token.perETHChangePercentage));
+    return arrToken.find((token) =>
+        BigNumber(minChangePercentage).isEqualTo(token.perETHChangePercentage as string)
+    ) as WorkToken;
 };
 
 // ================== Point (v4) ==================
@@ -265,11 +280,11 @@ const getTokenMinChangePercentage = (arrToken = []) => {
  * (bằng đúng `pointAfterCheck` khi mốc đó không swap), chỉ để xem nên không
  * cần lưu lịch sử.
  */
-const updatePointAfterCheckBeforeSwap = (arrToken = [], arrTokenPre = []) => {
+const updatePointAfterCheckBeforeSwap = (arrToken: WorkToken[] = [], arrTokenPre: TokenPre[] = []): WorkToken[] => {
     arrToken.forEach((token, index) => {
         const tokenPre = arrTokenPre[index];
 
-        token.pointAfterCheck = BigNumber(tokenPre.pointAfterCheck).plus(token.changeByPoint).toFixed();
+        token.pointAfterCheck = BigNumber(tokenPre.pointAfterCheck).plus(token.changeByPoint as string).toFixed();
         arrToken[index] = token;
     });
 
@@ -277,7 +292,7 @@ const updatePointAfterCheckBeforeSwap = (arrToken = [], arrTokenPre = []) => {
 };
 
 //swap xong: token output về 1000, token khác đang < 1000 kéo lên 1000
-const updatePointAfterCheckInSwap = (arrToken = [], tokenOutput) => {
+const updatePointAfterCheckInSwap = (arrToken: WorkToken[] = [], tokenOutput: WorkToken): WorkToken[] => {
     const symbolOutput = uppercase(tokenOutput.symbol);
 
     arrToken.forEach((token, index) => {
@@ -289,7 +304,7 @@ const updatePointAfterCheckInSwap = (arrToken = [], tokenOutput) => {
 
     arrToken.forEach((token, index) => {
         if (symbolOutput !== uppercase(token.symbol)) {
-            if (BigNumber(token.pointAfterCheck).isLessThan(BASE_POINT)) {
+            if (BigNumber(token.pointAfterCheck as string).isLessThan(BASE_POINT)) {
                 token.pointAfterCheck = BASE_POINT;
             }
         }
@@ -300,7 +315,13 @@ const updatePointAfterCheckInSwap = (arrToken = [], tokenOutput) => {
 };
 
 //reset perETHOriginal khi có >= 2 token vượt resetPoint
-const updatePerETHOriginal = (arrToken = [], arrTokenPre = [], tokenInput, userConfig, perETHOriginal) => {
+const updatePerETHOriginal = (
+    arrToken: WorkToken[] = [],
+    arrTokenPre: TokenPre[] = [],
+    tokenInput: WorkToken | undefined,
+    userConfig: UserConfig,
+    perETHOriginal: TradeState["perETHOriginal"]
+): TradeState["perETHOriginal"] => {
     const resetPoint = BigNumber(BASE_POINT)
         .plus(
             BigNumber(BASE_POINT)
@@ -323,7 +344,7 @@ const updatePerETHOriginal = (arrToken = [], arrTokenPre = [], tokenInput, userC
     });
 
     arrToken.forEach((token) => {
-        if (BigNumber(token.pointAfterCheck).isGreaterThan(resetPoint)) {
+        if (BigNumber(token.pointAfterCheck as string).isGreaterThan(resetPoint)) {
             currentAmountMoreThanRest++;
         }
     });
@@ -338,7 +359,7 @@ const updatePerETHOriginal = (arrToken = [], arrTokenPre = [], tokenInput, userC
                 }
             } else {
                 if (symbolInput !== symbol) {
-                    perETHOriginal[symbol] = token.perETH;
+                    perETHOriginal[symbol] = token.perETH as string;
                 }
             }
         });
@@ -349,7 +370,7 @@ const updatePerETHOriginal = (arrToken = [], arrTokenPre = [], tokenInput, userC
             const symbol = uppercase(token.symbol);
 
             if (symbol === "ETH" || symbol === "BTC") {
-                perETHOriginal[symbol] = token.perETH;
+                perETHOriginal[symbol] = token.perETH as string;
             }
         });
     }
@@ -359,7 +380,7 @@ const updatePerETHOriginal = (arrToken = [], arrTokenPre = [], tokenInput, userC
 
 // ================== Init data ==================
 
-const initFirstItem = (item, userConfig, state) => {
+const initFirstItem = (item: Item, userConfig: UserConfig, state: TradeState): { item: Item; state: TradeState } => {
     const tokenETH = getTokenETH(item.arrToken);
     const inputStart = uppercase(userConfig.inputStart);
     const isETH = inputStart === "ETH";
@@ -398,7 +419,7 @@ const initFirstItem = (item, userConfig, state) => {
     return { item, state };
 };
 
-const initItem = (item, itemPre, state) => {
+const initItem = (item: Item, itemPre: ItemPre, state: TradeState): Item => {
     const tokenETH = getTokenETH(item.arrToken);
 
     if (!tokenETH) throw new Error("[tradeV4] thiếu token ETH trong arrToken");
@@ -440,9 +461,9 @@ const initItem = (item, itemPre, state) => {
  * token. Thiếu hàm này thì thuật toán vẫn chạy ra số — chỉ là số sai, không
  * lỗi nào bắn ra.
  */
-const TOKEN_PRE_FIELDS = ["price", "perETH", "pointAfterCheck"];
+const TOKEN_PRE_FIELDS = ["price", "perETH", "pointAfterCheck"] as const;
 
-const assertTokenPre = (token, tokenPre, price1Point) => {
+const assertTokenPre = (token: WorkToken, tokenPre: TokenPre | undefined, price1Point: string | undefined): void => {
     const symbol = uppercase(token.symbol);
 
     if (!tokenPre) throw new Error(`[tradeV4] itemPre thiếu mốc trước của ${symbol}`);
@@ -478,25 +499,28 @@ const assertTokenPre = (token, tokenPre, price1Point) => {
 // ================== Swap Logic ==================
 
 /**
- * KHÁC BACKTEST: gọi swap THẬT.
+ * Gọi hàm swap do caller truyền vào (backtest / test). Web3 swap thật đã TẮT — xem note đầu file.
  *
- * `swapBuy` trong swapV4.js nhận { idBot, chainId, swapId, tokenIn,
+ * `swapBuy` trong swapV4.ts nhận { idBot, chainId, swapId, tokenIn,
  * priceTokenIn, tokenOut, priceTokenOut, amount } và trả { txHash, amount }.
  *
  * `priceTokenIn` / `priceTokenOut` là giá USD của tokenIn / tokenOut tại mốc
- * này (lấy nguyên `token.price` của arrToken), để swapV4.js tự tính rate.
+ * này (lấy nguyên `token.price` của arrToken), để hàm swap tự tính rate.
  *
  * `amount` TRẢ VỀ là số tokenOut nhận được của lệnh swap vừa gửi (đừng lẫn với
  * `amount` TRUYỀN VÀO là số tokenIn đem swap). Thuật toán lấy NGUYÊN số đó làm
  * vốn cho mốc sau, không tính lại theo giá, không tự trừ phí/slippage.
  *
- * swapV4.js chỉ GỬI tx rồi trả hash, KHÔNG chờ tx thành công onchain. Nên:
+ * swapV4.ts chỉ GỬI tx rồi trả hash, KHÔNG chờ tx thành công onchain. Nên:
  *   - hàm này trả về là tx MỚI GỬI, chưa chắc đã lên chain
  *   - gửi tx không được → throw, caller không lưu config
  *   - tx gửi rồi mà sau đó fail onchain thì file này không biết: server theo
  *     `history.txHash` mà xử lý (số trong config lúc đó lệch với số dư thật)
  */
-const callSwap = async (swapCtx, { tokenIn, tokenOut, amount }) => {
+const callSwap = async (
+    swapCtx: SwapCtx & { swap: SwapFn },
+    { tokenIn, tokenOut, amount }: { tokenIn: WorkToken; tokenOut: WorkToken; amount: string }
+): Promise<{ amountOut: string; txHash: string | null }> => {
     const { idBot, chainId, swapId, swap } = swapCtx;
 
     const result = await swap({
@@ -510,7 +534,7 @@ const callSwap = async (swapCtx, { tokenIn, tokenOut, amount }) => {
         amount: BigNumber(amount).toFixed(),
     });
 
-    // số nhận về nằm ở `result.amount` — đúng field swapV4.js đang trả
+    // số nhận về nằm ở `result.amount` — đúng field swapV4.ts đang trả
     const amountOut = toNumberOrNull(result && result.amount);
 
     if (!amountOut || amountOut.lte(0)) {
@@ -525,7 +549,12 @@ const callSwap = async (swapCtx, { tokenIn, tokenOut, amount }) => {
 
 // KHÁC BACKTEST: backtest nhận thêm param số nhận về tính theo giá. Ở đây bỏ
 // param đó: số của mốc này là số thực nhận của tx.
-const onSwap = async (item, tokenOutput, state, swapCtx) => {
+const onSwap = async (
+    item: Item,
+    tokenOutput: WorkToken,
+    state: TradeState,
+    swapCtx: SwapCtx
+): Promise<{ item: Item; state: TradeState }> => {
     const symbolOutput = uppercase(tokenOutput.symbol);
     const symbolInput = state.outputSwap;
     const tokenInput = getTokenBySymbol(item.arrToken, symbolInput);
@@ -534,12 +563,45 @@ const onSwap = async (item, tokenOutput, state, swapCtx) => {
         throw new Error(`[tradeV4] token đang nắm giữ "${symbolInput}" không có trong arrToken`);
     }
 
-    // gửi tx swap trước, số swapV4.js trả về mới là số của mốc này
-    const { amountOut, txHash } = await callSwap(swapCtx, {
-        tokenIn: tokenInput,
-        tokenOut: tokenOutput,
-        amount: state.amountInput,
-    });
+    let amountOut: string;
+    let txHash: string | null;
+
+    if (swapCtx.swap) {
+        // backtest / test: hàm swap GIẢ do caller truyền vào, không chạm chain
+        ({ amountOut, txHash } = await callSwap({ ...swapCtx, swap: swapCtx.swap }, {
+            tokenIn: tokenInput,
+            tokenOut: tokenOutput,
+            amount: state.amountInput,
+        }));
+    } else {
+        // ⚠️ NOTE CHO TEAM SERVER — CHỖ NÀY CẦN GỌI WEB3 SWAP:
+        //   Helper KHÔNG gửi tx. Khi history trả về `action = "SWAP_PENDING"`,
+        //   server tự gọi web3 swap (vd `swapBuy` / `swapSell` của swapV4.ts,
+        //   hoặc limit-order) với:
+        //       tokenIn   = address của `history.inputSwap`  (= tokenInput.address)
+        //       tokenOut  = address của `history.outputSwap` (= tokenOutput.address)
+        //       amount    = `state.amountInput` của config TRƯỚC khi gọi hàm
+        //       priceTokenIn / priceTokenOut = `price` của 2 token tại mốc này
+        //   Sau khi tx thành công onchain, server PHẢI cập nhật lại các field
+        //   đang mang giá trị tạm:
+        //       history.amountSwap, history.txHash, history.currentAmount
+        //       config.state.amountInput
+        //   Chưa cập nhật mà chạy mốc sau thì `amountInput = '0'` → thuật toán
+        //   coi vốn bằng 0, không swap được nữa.
+        //
+        // ---- [TẠM TẮT] web3 swap thật, thay bằng server tự gọi ----
+        // const { amountOut, txHash } = await callSwap(swapCtx, {
+        //     tokenIn: tokenInput,
+        //     tokenOut: tokenOutput,
+        //     amount: state.amountInput,
+        // });
+        // ---------------------------------------------------------------------
+
+        // PLACEHOLDER: server gọi web3 swap rồi cập nhật lại 2 giá trị này
+        // (cùng các field phụ thuộc, xem note trên) khi transaction thành công.
+        amountOut = '0'; // TODO(server): số tokenOut thực nhận từ web3 swap
+        txHash = '0x';   // TODO(server): hash của transaction web3 swap
+    }
 
     //v4: token output về 1000 sau khi swap
     item.arrToken = updatePointAfterCheckInSwap(item.arrToken, tokenOutput);
@@ -556,10 +618,17 @@ const onSwap = async (item, tokenOutput, state, swapCtx) => {
     return { item, state };
 };
 
-const checkToSwap = async (item, itemPre, userConfig, state, swapCtx) => {
+const checkToSwap = async (
+    item: Item,
+    itemPre: ItemPre,
+    userConfig: UserConfig,
+    state: TradeState,
+    swapCtx: SwapCtx
+): Promise<{ item: Item; state: TradeState }> => {
     const tokenOutput = getTokenMinChangePercentage(item.arrToken);
-    const tokenETH = getTokenETH(item.arrToken);
-    const tokenBTC = getTokenBTC(item.arrToken);
+    // initItem / initFirstItem đã chặn thiếu ETH; BTC + token đang giữ khoá từ lúc register
+    const tokenETH = getTokenETH(item.arrToken) as WorkToken;
+    const tokenBTC = getTokenBTC(item.arrToken) as WorkToken;
     const tokenInput = getTokenBySymbol(item.arrToken, state.outputSwap);
 
     const symbolOutput = uppercase(tokenOutput.symbol);
@@ -573,16 +642,16 @@ const checkToSwap = async (item, itemPre, userConfig, state, swapCtx) => {
     // KHÁC BACKTEST: backtest để `ETHLastSwapTemp` trong state. Ở đây là biến
     // LOCAL, không lưu config: trong một mốc nó luôn được ghi ở trên rồi mới đọc
     // ở dưới (cùng key, cùng nhánh if), mốc sau không bao giờ đọc lại.
-    const ETHLastSwapTemp = {};
+    const ETHLastSwapTemp: Record<string, string> = {};
 
     //v4: update pointAfterCheck before swap
     item.arrToken = updatePointAfterCheckBeforeSwap(item.arrToken, itemPre.arrToken);
 
     if (state.outputSwapTemp !== symbolOutput && Number(tokenOutput.perETHChangePercentage) < limitChangePercentage) {
         if (symbolOutput === "ETH") {
-            ETHLastSwapTemp[symbolBTC] = tokenBTC.perETH;
+            ETHLastSwapTemp[symbolBTC] = tokenBTC.perETH as string;
         } else {
-            ETHLastSwapTemp[symbolOutput] = tokenOutput.perETH;
+            ETHLastSwapTemp[symbolOutput] = tokenOutput.perETH as string;
         }
 
         state.outputSwapTemp = symbolOutput;
@@ -590,15 +659,15 @@ const checkToSwap = async (item, itemPre, userConfig, state, swapCtx) => {
         if (state.outputSwap !== symbolOutput && symbolInput !== symbolOutput) {
             //(SwapInputTokenAmount * SwapInputTokenPrice) / ETHPrice
             const amountOutCheck = BigNumber(state.amountInput)
-                .multipliedBy(tokenInput.price)
+                .multipliedBy((tokenInput as WorkToken).price)
                 .dividedBy(tokenETH.price)
                 .toFixed();
 
             if (symbolOutput === "ETH" || symbolOutput === "BTC") {
-                if (BigNumber(tokenBTC.perETH).gt(state.ETHLastSwap[symbolBTC])) {
+                if (BigNumber(tokenBTC.perETH as string).gt(state.ETHLastSwap[symbolBTC])) {
                     //(SwapInputTokenAmount * SwapInputTokenPrice)/ ETHPrice của giờ đó => đem so sánh với ETHOriginalAmount
                     if (BigNumber(amountOutCheck).gte(state.ETHOriginalAmount)) {
-                        if (BigNumber(tokenBTC.perETH).gte(state.perETHOriginal[symbolBTC])) {
+                        if (BigNumber(tokenBTC.perETH as string).gte(state.perETHOriginal[symbolBTC])) {
                             const res = await onSwap(item, tokenOutput, state, swapCtx);
 
                             item = res.item;
@@ -609,10 +678,10 @@ const checkToSwap = async (item, itemPre, userConfig, state, swapCtx) => {
 
                 state.ETHLastSwap[symbolBTC] = ETHLastSwapTemp[symbolBTC];
             } else {
-                if (BigNumber(tokenOutput.perETH).gte(state.ETHLastSwap[symbolOutput])) {
+                if (BigNumber(tokenOutput.perETH as string).gte(state.ETHLastSwap[symbolOutput])) {
                     //(SwapInputTokenAmount * SwapInputTokenPrice)/ ETHPrice của giờ đó => đem so sánh với ETHOriginalAmount
                     if (BigNumber(amountOutCheck).gte(state.ETHOriginalAmount)) {
-                        if (BigNumber(tokenOutput.perETH).gte(state.perETHOriginal[symbolOutput])) {
+                        if (BigNumber(tokenOutput.perETH as string).gte(state.perETHOriginal[symbolOutput])) {
                             const res = await onSwap(item, tokenOutput, state, swapCtx);
 
                             item = res.item;
@@ -673,7 +742,12 @@ const checkToSwap = async (item, itemPre, userConfig, state, swapCtx) => {
  *   - Logic swap trực tiếp cũ (callSwap) được giữ lại dạng comment để tham
  *     khảo / bật lại nếu cần.
  */
-const unwindToInputStart = async (item, userConfig, state, swapCtx) => {
+const unwindToInputStart = async (
+    _item: Item,
+    userConfig: UserConfig,
+    state: TradeState,
+    _swapCtx: SwapCtx
+): Promise<{ amount: string; swap: SwapFields; state: TradeState }> => {
     const target = uppercase(userConfig.inputStart);
 
     // đồng đang nắm giữ → là `inputSwap` của lệnh limit-order server sẽ đặt
@@ -724,7 +798,7 @@ const unwindToInputStart = async (item, userConfig, state, swapCtx) => {
 
 // ================== Run ==================
 
-const getStateDefault = (userConfig) => {
+const getStateDefault = (userConfig: UserConfig): TradeState => {
     const inputStart = uppercase(userConfig.inputStart);
 
     return {
@@ -739,8 +813,8 @@ const getStateDefault = (userConfig) => {
 };
 
 /** 3 field cài đặt của user — thuật toán chỉ đọc, chuẩn hoá một lần lúc register. */
-const getUserConfig = (config) => {
-    const userConfig = {
+const getUserConfig = (config: RegisterConfigInput | UserConfig): UserConfig => {
+    const userConfig: UserConfig = {
         ...config,
         amountStart: BigNumber(config.amountStart).toFixed(),
         inputStart: uppercase(config.inputStart),
@@ -748,7 +822,7 @@ const getUserConfig = (config) => {
         tradeTokens: config.tradeTokens
     };
 
-    ["amountStart", "volatility"].forEach((field) => {
+    (["amountStart", "volatility"] as const).forEach((field) => {
         const value = toNumberOrNull(config[field]);
 
         if (!value || value.lte(0)) {
@@ -760,20 +834,26 @@ const getUserConfig = (config) => {
 };
 
 /** `itemPre` của mốc sau — chỉ cần những field mà initItem đọc lại. */
-const toItemPre = (item) => ({
+const toItemPre = (item: Item): ItemPre => ({
     arrToken: item.arrToken.map((token) => ({
         symbol: token.symbol,
         address: token.address,
         price: token.price,
-        perETH: token.perETH,
-        perETHChangePercentage: token.perETHChangePercentage,
-        pointAfterCheck: token.pointAfterCheck,
+        perETH: token.perETH as string,
+        perETHChangePercentage: token.perETHChangePercentage as string,
+        pointAfterCheck: token.pointAfterCheck as string,
     })),
 });
 
 /** Dạng kết quả chung của cả 4 hàm. */
-const toResult = (action, item, userConfig, state, extraHistory = {}) => {
-    const history = {
+const toResult = (
+    action: HistoryAction,
+    item: Item,
+    userConfig: UserConfig,
+    state: TradeState,
+    extraHistory: Pick<TradeHistory, "amountWithdraw" | "pnl"> = {}
+): TradeResult => {
+    const history: TradeHistory = {
         action,
         isSwap: !!item.isSwap,
         inputSwap: item.inputSwap || null,
@@ -782,7 +862,7 @@ const toResult = (action, item, userConfig, state, extraHistory = {}) => {
         txHash: item.txHash || null,
         currentToken: state.outputSwap,
         currentAmount: state.amountInput,
-        arrToken: item.arrToken,
+        arrToken: item.arrToken as HistoryToken[],
         ...extraHistory,
     };
 
@@ -790,7 +870,9 @@ const toResult = (action, item, userConfig, state, extraHistory = {}) => {
 };
 
 /** Mở config lấy từ DB ra, chặn sớm nếu bot chưa register hoặc đã stop. */
-const openConfig = (config) => {
+const openConfig = (
+    config: TradeConfig | undefined
+): { userConfig: UserConfig; state: TradeState; itemPre: ItemPre } => {
     if (!config || typeof config !== "object") throw new Error("[tradeV4] thiếu config");
 
     if (!config.userConfig || !config.state || !config.itemPre) {
@@ -807,12 +889,13 @@ const openConfig = (config) => {
 };
 
 /** Tham số của hàm swap — chỉ run/withdraw/reset cần, register thì không. */
-const getSwapCtx = ({ idBot, chainId, swapId, swap = swapBuy }) => {
+const getSwapCtx = ({ idBot, chainId, swapId, swap }: Partial<RunTradeParams>): SwapCtx => {
     if (idBot === null || idBot === undefined || idBot === "") throw new Error("[tradeV4] thiếu idBot");
     if (chainId === null || chainId === undefined || chainId === "") throw new Error("[tradeV4] thiếu chainId");
-    if (typeof swap !== "function") throw new Error("[tradeV4] swap phải là function");
+    // không truyền swap → KHÔNG gọi web3, onSwap trả placeholder cho server (xem note đầu file)
+    if (swap !== undefined && typeof swap !== "function") throw new Error("[tradeV4] swap phải là function");
 
-    return { idBot, chainId, swapId, swap };
+    return { idBot: idBot as string | number, chainId: chainId as string | number, swapId, swap };
 };
 
 /**
@@ -825,21 +908,21 @@ const getSwapCtx = ({ idBot, chainId, swapId, swap = swapBuy }) => {
  * Config đã register (đã có state) → THROW, không ghi đè state đang chạy. Muốn
  * mở vòng mới cho bot đang chạy thì dùng resetTradeV4.
  *
- * @param {Object} params
- * @param {UserConfig} params.config  3 field cài đặt: amountStart, inputStart, volatility
- * @param {Array<{symbol: string, address: string, price: string|number}>} params.arrToken
- * @returns {{ history: Object, config: Config }}
+ * Tham số: `RegisterTradeParams` — config là 3 field cài đặt (amountStart,
+ * inputStart, volatility), arrToken là token của mốc hiện tại.
  */
-const registerTradeV4 = ({ config, arrToken } = {}) => {
+export const registerTradeV4 = ({ config, arrToken } = {} as RegisterTradeParams): TradeResult => {
     if (!config || typeof config !== "object") throw new Error("[tradeV4] thiếu config");
 
-    if (config.state || config.itemPre) {
+    const registered = config as Partial<TradeConfig>;
+
+    if (registered.state || registered.itemPre) {
         throw new Error("[tradeV4] config đã register — dùng resetTradeV4 nếu muốn mở vòng mới");
     }
 
     const userConfig = getUserConfig(config);
 
-    let item = { arrToken: normalizeSymbol(arrToken) };
+    let item: Item = { arrToken: normalizeSymbol(arrToken) };
     let state = getStateDefault(userConfig);
 
     const res = initFirstItem(item, userConfig, state);
@@ -855,7 +938,7 @@ const registerTradeV4 = ({ config, arrToken } = {}) => {
  *
  * Tương đương một vòng lặp `calculateData` của backtest: tính perETH /
  * changeByPoint / point theo mốc trước, xét 4 tầng điều kiện, đủ thì swap THẬT
- * qua swapV4.js.
+ * qua swapV4.ts.
  *
  * `history.action` = "SWAP_PENDING" nếu mốc này có GỬI tx (chỉ gửi, không chờ
  * tx thành công onchain), "NOSWAP" nếu không.
@@ -863,23 +946,21 @@ const registerTradeV4 = ({ config, arrToken } = {}) => {
  * Swap throw → hàm throw theo, KHÔNG trả config. Caller không lưu gì, mốc sau
  * xét lại từ đầu theo giá mới.
  *
- * @param {Object} params
- * @param {Config} params.config            config lấy từ DB
- * @param {Array<{symbol: string, address: string, price: string|number}>} params.arrToken
- * @param {string|number} params.idBot      truyền nguyên xuống hàm swap
- * @param {string|number} params.chainId    truyền nguyên xuống hàm swap
- * @param {string} [params.swapId]          khoá chống gửi trùng tx
- * @param {Function} [params.swap]          mặc định swapBuy của swapV4.js
- * @returns {Promise<{ history: Object, config: Config }>}
+ * Tham số: `RunTradeParams` (config lấy từ DB, arrToken, idBot, chainId,
+ * swapId?, swap? — hàm swap GIẢ cho backtest/test; không truyền thì helper
+ * KHÔNG gửi tx, mốc có swap trả placeholder để server tự gọi web3 swap).
+ *
+ * ⚠️ `action = "SWAP_PENDING"` khi không truyền `swap`: `amountSwap = '0'`,
+ * `txHash = '0x'` là GIÁ TRỊ TẠM — xem note `TODO(server)` trong `onSwap`.
  */
-const runTradeV4 = async (params = {}) => {
+export const runTradeV4 = async (params = {} as RunTradeParams): Promise<TradeResult> => {
     const { config, arrToken } = params;
 
     let { userConfig, state, itemPre } = openConfig(config);
 
     const swapCtx = getSwapCtx(params);
 
-    let item = { arrToken: normalizeSymbol(arrToken), isSwap: false };
+    let item: Item = { arrToken: normalizeSymbol(arrToken), isSwap: false };
 
     item = initItem(item, itemPre, state);
 
@@ -902,17 +983,16 @@ const runTradeV4 = async (params = {}) => {
  * chỉ lo phần swap, và chỉ GỬI tx chứ không chờ confirm; chuyển tiền từ
  * contract về ví user là việc của server, làm sau khi tx unwind đã lên chain.
  *
- * @param {Object} params  giống runTradeV4
- * @returns {Promise<{ history: Object, config: Config }>}
+ * Tham số giống runTradeV4 (`RunTradeParams`).
  */
-const withdrawTradeV4 = async (params = {}) => {
+export const withdrawTradeV4 = async (params = {} as RunTradeParams): Promise<TradeResult> => {
     const { config, arrToken } = params;
 
     let { userConfig, state, itemPre } = openConfig(config);
 
     const swapCtx = getSwapCtx(params);
 
-    let item = { arrToken: normalizeSymbol(arrToken), isSwap: false };
+    let item: Item = { arrToken: normalizeSymbol(arrToken), isSwap: false };
 
     // vẫn tính chỉ số của mốc cuối để history có đủ số liệu như mọi mốc khác
     item = initItem(item, itemPre, state);
@@ -946,17 +1026,16 @@ const withdrawTradeV4 = async (params = {}) => {
  * swap unwind, `arrToken` + `currentToken`/`currentAmount` là trạng thái ĐẦU
  * VÒNG MỚI. Một bản ghi, server lưu như mọi mốc khác.
  *
- * @param {Object} params  giống runTradeV4
- * @returns {Promise<{ history: Object, config: Config }>}
+ * Tham số giống runTradeV4 (`RunTradeParams`).
  */
-const resetTradeV4 = async (params = {}) => {
+export const resetTradeV4 = async (params = {} as RunTradeParams): Promise<TradeResult> => {
     const { config, arrToken } = params;
 
     let { userConfig, state, itemPre } = openConfig(config);
 
     const swapCtx = getSwapCtx(params);
 
-    let item = { arrToken: normalizeSymbol(arrToken), isSwap: false };
+    let item: Item = { arrToken: normalizeSymbol(arrToken), isSwap: false };
 
     item = initItem(item, itemPre, state);
 
@@ -965,7 +1044,7 @@ const resetTradeV4 = async (params = {}) => {
     // vòng mới: cùng cài đặt, vốn là số vừa unwind được, point về 1000
     const userConfigNext = getUserConfig({ ...userConfig, amountStart: res.amount });
 
-    let itemNext = { arrToken: normalizeSymbol(arrToken), isSwap: false };
+    let itemNext: Item = { arrToken: normalizeSymbol(arrToken), isSwap: false };
     let stateNext = getStateDefault(userConfigNext);
 
     const resInit = initFirstItem(itemNext, userConfigNext, stateNext);
@@ -977,11 +1056,4 @@ const resetTradeV4 = async (params = {}) => {
     Object.assign(itemNext, res.swap);
 
     return toResult(ACTION.RESET, itemNext, userConfigNext, stateNext);
-};
-
-module.exports = {
-    registerTradeV4,
-    runTradeV4,
-    withdrawTradeV4,
-    resetTradeV4,
 };

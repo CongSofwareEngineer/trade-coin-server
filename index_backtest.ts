@@ -1,33 +1,28 @@
 /**
- * BACKTEST — chạy thuật toán tradeV4 trên data giả (helper/data_fake.js),
- * swap bằng helper/swapV4_backtest.js: không viem, không gọi pool / contract.
+ * BACKTEST — chạy thuật toán tradeV4 trên data giả (helper/data_fake.ts),
+ * swap bằng helper/swapV4_backtest.ts: không viem, không gọi pool / contract.
  *
- *     node index_backtest.js
+ *     npm run backtest        (= npx tsx index_backtest.ts)
+ *
+ * tradeV4.ts chỉ import swapV4.ts (viem + RPC) khi KHÔNG truyền `swap`. Ở đây
+ * luôn truyền `swap: swapBuy` của bản backtest nên viem không bao giờ được load.
  */
 
-const path = require("path")
+import BigNumber from "bignumber.js"
+import { ARR_TOKEN } from "./helper/data_fake"
+import { registerTradeV4, runTradeV4, withdrawTradeV4 } from "./helper/tradeV4"
+import { filterTradeTokens, convertSymbolToken } from "./utils/token"
+import { swapBuy, setBacktestOptions, getBacktestOrders, resetBacktest } from "./helper/swapV4_backtest"
+import type { ArrTokenInput, BacktestOptions, RegisterConfigInput, TradeConfig, TradeHistory, TradeResult } from "./types"
 
-// tradeV4.js `require("./swapV4")` ngay đầu file → bản thật kéo theo viem + RPC.
-// Đặt sẵn bản backtest vào cache của require để tradeV4.js nhận bản giả,
-// không phải sửa tradeV4.js và không load viem.
-const swapBacktest = require("./helper/swapV4_backtest")
-const swapV4Path = require.resolve(path.join(__dirname, "helper", "swapV4.js"))
-require.cache[swapV4Path] = {
-  id: swapV4Path,
-  filename: swapV4Path,
-  loaded: true,
-  exports: swapBacktest,
+/** Một dòng history của backtest: history thật + thời điểm + giá trị quy đổi. */
+type BacktestHistory = TradeHistory & {
+  time: string
+  value?: { usd: string | null; inInputStart: string | null }
 }
 
-const BigNumber = require("bignumber.js")
-const { ARR_TOKEN } = require("./helper/data_fake")
-const { registerTradeV4, runTradeV4, withdrawTradeV4 } = require("./helper/tradeV4")
-const { filterTradeTokens, convertSymbolToken } = require("./utils/token")
-
-const { swapBuy, setBacktestOptions, getBacktestOrders, resetBacktest } = swapBacktest
-
-// Giả định của backtest — xem đầu file helper/swapV4_backtest.js
-const BACKTEST_OPTIONS = {
+// Giả định của backtest — xem đầu file helper/swapV4_backtest.ts
+const BACKTEST_OPTIONS: Partial<BacktestOptions> = {
   priceSlippage: "0.001", // biên giá limit 0.1% như swapV4.js
   feeRate: "0",           // phí trừ trên số nhận về
   log: false,             // true = in từng lệnh swap
@@ -37,7 +32,7 @@ const BACKTEST_OPTIONS = {
 const WITHDRAW_AT_END = true
 
 // address giả: tradeV4 bắt buộc có address, backtest không dùng tới
-let arrToken = ARR_TOKEN.map(e => {
+const arrToken: Array<{ time: string; arrToken: ArrTokenInput[] }> = ARR_TOKEN.map(e => {
   return {
     time: e.time,
     arrToken: e.arrToken.map((token, index) => ({ ...token, address: `0x9f276af79b2b5de2946a88b0fe2717318f924d${index}c` })),
@@ -45,7 +40,7 @@ let arrToken = ARR_TOKEN.map(e => {
 })
 
 // Giống index.js
-let initConfig = {
+const initConfig: RegisterConfigInput = {
   "address": "0x9f276af79b2b5de2946a88b0fe2717318f924d7c",
   chainId: 8453,
   "amountStart": "1",
@@ -71,7 +66,7 @@ const ID_BOT = "backtest"
 const CHAIN_ID = String(initConfig.chainId)
 
 /** Giá trị số đang giữ quy ra USD và ra inputStart, theo giá của mốc đó. */
-const valueOf = (history, tokens, inputStart) => {
+const valueOf = (history: TradeHistory, tokens: ArrTokenInput[], inputStart: string) => {
   const holding = tokens.find(t => convertSymbolToken(t.symbol) === convertSymbolToken(history.currentToken))
   const base = tokens.find(t => convertSymbolToken(t.symbol) === convertSymbolToken(inputStart))
   if (!holding || !base) return { usd: null, inInputStart: null }
@@ -86,16 +81,16 @@ const main = async () => {
 
   initConfig.inputStart = convertSymbolToken(initConfig.inputStart)
 
-  const histories = []
-  let config = initConfig
-  let lastTokens = null
+  const histories: BacktestHistory[] = []
+  let config: TradeConfig | null = null
+  let lastTokens: ArrTokenInput[] | null = null
 
   for (const [index, { time, arrToken: tokens }] of arrToken.entries()) {
     const tradeTokens = filterTradeTokens(tokens, initConfig.tradeTokens)
     lastTokens = tradeTokens
 
-    const res = index === 0
-      ? registerTradeV4({ config, arrToken: tradeTokens })
+    const res: TradeResult = index === 0 || !config
+      ? registerTradeV4({ config: initConfig, arrToken: tradeTokens })
       : await runTradeV4({
         config,
         arrToken: tradeTokens,
@@ -109,8 +104,8 @@ const main = async () => {
     histories.push({ time, ...res.history, value: valueOf(res.history, tradeTokens, initConfig.inputStart) })
   }
 
-  let withdrawResult = null
-  if (WITHDRAW_AT_END && lastTokens) {
+  let withdrawResult: TradeResult | null = null
+  if (WITHDRAW_AT_END && lastTokens && config) {
     withdrawResult = await withdrawTradeV4({
       config,
       arrToken: lastTokens,
@@ -131,17 +126,17 @@ const main = async () => {
     time: h.time,
     from: h.inputSwap,
     to: h.outputSwap,
-    amount: BigNumber(h.amountSwap).toFixed(8),
-    valueUSD: h.value.usd,
-    [`value${initConfig.inputStart}`]: h.value.inInputStart,
+    amount: BigNumber(h.amountSwap as string).toFixed(8),
+    valueUSD: h.value?.usd,
+    [`value${initConfig.inputStart}`]: h.value?.inInputStart,
   })))
 
   const first = arrToken[0]
   const last = arrToken[arrToken.length - 1]
   const holdUSD = BigNumber(initConfig.amountStart).times(
-    first.arrToken.find(t => convertSymbolToken(t.symbol) === initConfig.inputStart).price
+    first.arrToken.find(t => convertSymbolToken(t.symbol) === initConfig.inputStart)!.price
   )
-  const priceInputLast = last.arrToken.find(t => convertSymbolToken(t.symbol) === initConfig.inputStart).price
+  const priceInputLast = last.arrToken.find(t => convertSymbolToken(t.symbol) === initConfig.inputStart)!.price
 
   console.log("\n=========== TỔNG KẾT ===========")
   console.log({
@@ -151,11 +146,11 @@ const main = async () => {
     amountSwap: swaps.length,
     ordersSimulated: getBacktestOrders().length,
     amountStart: `${initConfig.amountStart} ${initConfig.inputStart}`,
-    holding: `${config.state.amountInput} ${config.state.outputSwap}`,
+    holding: `${config?.state.amountInput} ${config?.state.outputSwap}`,
     ...(withdrawResult && {
       amountWithdraw: `${withdrawResult.history.amountWithdraw} ${initConfig.inputStart}`,
       pnl: `${withdrawResult.history.pnl} ${initConfig.inputStart}`,
-      pnlPercent: BigNumber(withdrawResult.history.pnl).dividedBy(initConfig.amountStart).times(100).toFixed(4) + "%",
+      pnlPercent: BigNumber(withdrawResult.history.pnl as string).dividedBy(initConfig.amountStart).times(100).toFixed(4) + "%",
     }),
     holdOnlyUSD: `${holdUSD.toFixed(2)} -> ${BigNumber(initConfig.amountStart).times(priceInputLast).toFixed(2)}`,
   })

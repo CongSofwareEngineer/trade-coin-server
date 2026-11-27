@@ -20,7 +20,7 @@
  */
 
 /** Tuple PoolKey của Uniswap v4 — dùng để encode poolId (keccak của poolKey). */
-const POOL_KEY_PARAM = {
+export const POOL_KEY_PARAM = {
     type: "tuple",
     components: [
         { name: "currency0", type: "address" },
@@ -29,13 +29,13 @@ const POOL_KEY_PARAM = {
         { name: "tickSpacing", type: "int24" },
         { name: "hooks", type: "address" },
     ],
-};
+} as const;
 
 /** Cùng tuple đó nhưng ở dạng input của function/event. */
-const POOL_KEY_INPUT = { type: "tuple", name: "key", components: POOL_KEY_PARAM.components };
+export const POOL_KEY_INPUT = { type: "tuple", name: "key", components: POOL_KEY_PARAM.components } as const;
 
 /** ABI hook limit order. */
-const LIMIT_ORDER_HOOK_ABI = [
+export const LIMIT_ORDER_HOOK_ABI = [
     {
         name: "placeOrder",
         type: "function",
@@ -116,10 +116,10 @@ const LIMIT_ORDER_HOOK_ABI = [
     { name: "SafeERC20FailedOperation", type: "error", inputs: [{ type: "address", name: "token" }] },
     { name: "UnexpectedFeeDelta", type: "error", inputs: [] },
     { name: "ZeroLiquidity", type: "error", inputs: [] },
-];
+] as const;
 
 /** ABI StateView của Uniswap v4 (`poolAddress` trong API /pool chính là StateView). */
-const STATE_VIEW_ABI = [
+export const STATE_VIEW_ABI = [
     {
         name: "getSlot0",
         type: "function",
@@ -132,11 +132,4 @@ const STATE_VIEW_ABI = [
             { type: "uint24", name: "lpFee" },
         ],
     },
-];
-
-module.exports = {
-    POOL_KEY_PARAM,
-    POOL_KEY_INPUT,
-    LIMIT_ORDER_HOOK_ABI,
-    STATE_VIEW_ABI,
-};
+] as const;
