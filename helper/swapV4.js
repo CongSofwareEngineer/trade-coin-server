@@ -115,6 +115,8 @@ const withSwapId = (swapId, action, run) => {
 };
 
 const requireAddress = (value, label) => {
+    console.log({ value, label });
+
     if (!value || !isAddress(value)) throw new Error(`[swapV4] ${label} không phải address: ${value}`);
 
     return getAddress(value);
